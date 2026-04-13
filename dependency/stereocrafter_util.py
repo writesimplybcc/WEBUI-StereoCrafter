@@ -2162,17 +2162,19 @@ def start_ffmpeg_pipe_process(
             default_cpu_crf = "18"
         output_profile = "main"
     
-    # --- Smart 8K Encoding: CPU for Local, GPU for Cloud ---
+    # --- Smart High-Resolution Encoding: CPU for Local, GPU for Cloud ---
     # Check if FORCE_CPU_ENCODING is enabled
     force_cpu_encoding = os.environ.get('FORCE_CPU_ENCODING') == '1'
 
-    # RTX 3060/3070/3080/3090: Max 4096x4096 for H.264, 8192x8192 for HEVC
-    # RTX 6000 Ada (Runpod): Full 8K support for both H.264 and HEVC
-    # Strategy: Use NVENC on cloud (Runpod) or high-VRAM local systems, CPU on low-VRAM local
-    if content_width >= 7680 or content_height >= 4320:
+    # Detect high-resolution content (4K and above)
+    is_4k_or_higher = content_width >= 3840 or content_height >= 2160
+    is_8k_or_higher = content_width >= 7680 or content_height >= 4320
+
+    if is_4k_or_higher:
         if force_cpu_encoding:
-            # Force CPU encoding for stable 8K encoding (avoids NVENC memory issues)
-            logger.info(f"8K resolution detected ({content_width}x{content_height}). "
+            # Force CPU encoding for stable high-res encoding (avoids NVENC memory issues)
+            res_label = "8K" if is_8k_or_higher else "4K"
+            logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                        f"FORCE_CPU_ENCODING enabled - using libx265 CPU encoding for stability.")
             output_codec = "libx265"
             output_pix_fmt = "yuv420p10le"
@@ -2185,30 +2187,39 @@ def start_ffmpeg_pipe_process(
 
             if "nvenc" in output_codec:
                 if is_cloud_env:
-                    # Cloud (Runpod): Use HEVC NVENC for 8K (RTX 6000 Ada supports it)
-                    logger.info(f"8K resolution detected ({content_width}x{content_height}). "
+                    # Cloud (Runpod): Use HEVC NVENC for high-res (RTX 6000 Ada supports it)
+                    res_label = "8K" if is_8k_or_higher else "4K"
+                    logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                                f"Cloud environment detected - using HEVC NVENC for fast GPU encoding.")
                     output_codec = "hevc_nvenc"
                     output_pix_fmt = "yuv420p10le"
                     output_profile = "main10"
                     if user_output_crf is None:
-                        default_nvenc_cq = "24"  # HEVC CQ for 8K (lower = better quality)
-                    nvenc_preset = "p1"  # Fastest preset for 8K to avoid encoder buffer overflow
+                        if is_8k_or_higher:
+                            default_nvenc_cq = "24"  # HEVC CQ for 8K
+                        else:
+                            default_nvenc_cq = "22"  # HEVC CQ for 4K
+                    nvenc_preset = "p1"  # Fastest preset for high-res to avoid encoder buffer overflow
             elif CUDA_AVAILABLE:
                 # Local high-VRAM: Use HEVC NVENC if available
                 try:
                     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
                     if total_vram_gb >= 16:
-                        logger.info(f"8K resolution detected ({content_width}x{content_height}). "
+                        res_label = "8K" if is_8k_or_higher else "4K"
+                        logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                                    f"Local high-VRAM system ({total_vram_gb:.1f}GB) - using HEVC NVENC.")
                         output_codec = "hevc_nvenc"
                         output_pix_fmt = "yuv420p10le"
                         output_profile = "main10"
                         if user_output_crf is None:
-                            default_nvenc_cq = "24"
-                        nvenc_preset = "p5"
+                            if is_8k_or_higher:
+                                default_nvenc_cq = "24"
+                            else:
+                                default_nvenc_cq = "22"
+                        nvenc_preset = "p1"  # Fastest preset for high-res
                     else:
-                        logger.info(f"8K resolution detected ({content_width}x{content_height}). "
+                        res_label = "8K" if is_8k_or_higher else "4K"
+                        logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                                    f"Local low-VRAM system ({total_vram_gb:.1f}GB) - using libx265 CPU.")
                         output_codec = "libx265"
                         output_pix_fmt = "yuv420p10le"
@@ -2216,7 +2227,7 @@ def start_ffmpeg_pipe_process(
                         if user_output_crf is None:
                             default_cpu_crf = "24"
                 except Exception:
-                    logger.warning("Could not detect VRAM, defaulting to libx265 CPU for 8K.")
+                    logger.warning("Could not detect VRAM, defaulting to libx265 CPU for high-res.")
                     output_codec = "libx265"
                     output_pix_fmt = "yuv420p10le"
                     output_profile = "main10"
@@ -2224,7 +2235,8 @@ def start_ffmpeg_pipe_process(
                         default_cpu_crf = "24"
             else:
                 # Local: Use libx265 CPU (better quality, universal support)
-                logger.info(f"8K resolution detected ({content_width}x{content_height}). "
+                res_label = "8K" if is_8k_or_higher else "4K"
+                logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                            f"Local environment - using libx265 CPU encoding for compatibility.")
                 output_codec = "libx265"
                 output_pix_fmt = "yuv420p10le"
