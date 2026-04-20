@@ -1,0 +1,18 @@
+# Ensure shell scripts always use Unix line endings (LF)
+*.sh text eol=lf
+
+# Python files should use LF
+*.py text eol=lf
+
+# Markdown files can use native line endings
+*.md text
+
+# Binary files
+*.jpg binary
+*.png binary
+*.gif binary
+*.mp4 binary
+*.npz binary
+*.safetensors binary
+*.pth binary
+*.ckpt binary

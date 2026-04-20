@@ -81,4 +81,13 @@ if __name__ == "__main__":
     # Set the module-level CUDA_AVAILABLE flag
     sc_util.CUDA_AVAILABLE = check_cuda_availability()
     print(f"[DEBUG] CUDA_AVAILABLE set to: {sc_util.CUDA_AVAILABLE}")
+    
+    # Initialize CUDA and clear cache before UI initialization
+    # This ensures get_vram_config() gets accurate memory readings
+    if torch.cuda.is_available():
+        torch.cuda.init()
+        torch.cuda.empty_cache()
+        print(f"[DEBUG] CUDA initialized. GPU: {torch.cuda.get_device_name(0)}")
+        print(f"[DEBUG] Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+    
     launch()

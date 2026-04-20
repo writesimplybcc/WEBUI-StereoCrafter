@@ -6,6 +6,7 @@ Handles depth estimation interface and processing
 import os
 import threading
 import queue
+import logging
 import gradio as gr
 
 from ..base.base_ui import BaseWebUI
@@ -18,6 +19,8 @@ from depthcrafter.utils import (
     load_json_file,
     save_json_file,
 )
+
+logger = logging.getLogger(__name__)
 try:
     from depthcrafter import merge_depth_segments
 except ImportError as e:
@@ -34,6 +37,36 @@ class DepthCrafterWebUI(BaseWebUI):
     def __init__(self):
         super().__init__()
         
+        # Auto-detect best offload type based on GPU configuration
+        try:
+            from dependency.stereocrafter_util import get_vram_config, get_gpu_memory_info
+            
+            vram_config = get_vram_config()
+            gpu_info = get_gpu_memory_info()
+            
+            # Auto-detect best offload type based on GPU configuration
+            gpu_name = gpu_info.get('gpu_name', '').lower()
+            total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
+            
+            # RTX 3060 12GB or better with shared memory: Use hybrid approach
+            if total_dedicated_gb >= 12 and gpu_info.get('is_shared_memory_system', False):
+                # RTX 3060 12GB with shared memory: Use hybrid approach
+                default_offload = 'shared_memory'
+            elif total_dedicated_gb >= 12:
+                # 12GB+ dedicated VRAM: No offload needed
+                default_offload = 'none'
+            elif total_dedicated_gb >= 8:
+                # 8-12GB: Model offload for safety
+                default_offload = 'model'
+            else:
+                # <8GB: Sequential offload (slowest but necessary)
+                default_offload = 'sequential'
+                
+            logger.info(f"DepthCrafter auto-selected offload_type='{default_offload}' based on GPU: {gpu_info.get('gpu_name', 'Unknown')} ({total_dedicated_gb:.1f}GB)")
+        except Exception as e:
+            logger.warning(f"Could not auto-detect GPU for DepthCrafter, using 'model' offload: {e}")
+            default_offload = 'model'
+
         # Define all the variables that were in the original GUI
         self.input_dir_or_file_var = gr.Textbox(
             label="Input Folder/File", 
@@ -66,10 +99,10 @@ class DepthCrafterWebUI(BaseWebUI):
             info="Random seed for the generation process. Using the same seed with identical parameters and input should ideally produce the same depth map output. Set to -1 for a random seed each time, leading to slight variations in output if other stochastic processes are involved."
         )
         self.cpu_offload = gr.Dropdown(
-            ["model", "sequential", "none"], 
-            value="model", 
+            ["none", "model", "sequential", "shared_memory"],
+            value=default_offload,
             label="CPU Offload Mode",
-            info="Moves parts of the model (like UNet, VAE) to CPU RAM when not actively used to save VRAM on the GPU. 'model': Offloads the entire main model pipeline when it's idle between certain operations. Can save significant VRAM but introduces latency when moving data back and forth. 'sequential': More fine-grained offloading of components within the model's execution flow. Balances VRAM savings and speed. '': No offloading. Fastest if you have ample VRAM, but may cause out-of-memory errors on VRAM-constrained systems. This option primarily affects the Diffusers pipeline components."
+            info="Moves parts of the model (like UNet, VAE) to CPU RAM when not actively used to save VRAM on the GPU. 'none': No offloading (fastest for 12GB+ VRAM). 'model': Offloads entire pipeline when idle (balanced, for 8-12GB). 'sequential': Fine-grained component offloading (slowest, for <8GB). 'shared_memory': Keeps UNet+VAE on GPU, moves image encoder to shared RAM (optimized for RTX 3060 12GB with 32GB+ system RAM)."
         )
         self.use_cudnn_benchmark = gr.Checkbox(
             label="Use CUDNN Benchmark", 
@@ -95,9 +128,14 @@ class DepthCrafterWebUI(BaseWebUI):
             info="This value has a dual role depending on the 'Process as Segments' setting: Full Video Mode (Unchecked 'Process as Segments'): Defines the size of the processing window (number of frames) that slides over the video. The model processes the video in these chunks. Segment Mode (Checked 'Process as Segments'): Defines the number of output frames in each generated segment NPZ file. This is the target length of each chunk before overlap is considered for processing. Typically 60-110 frames. Larger values can improve temporal consistency but require more VRAM and processing time per window/segment. Must be larger than 'Overlap'."
         )
         self.overlap = gr.Slider(
-            0, 100, value=vram_config['overlap'], step=1, 
+            0, 100, value=vram_config['overlap'], step=1,
             label="Overlap",
             info="This value also has a dual role: Full Video Mode (Unchecked 'Process as Segments'): Number of frames that consecutive processing windows overlap. This helps maintain temporal consistency across window boundaries. Segment Mode (Checked 'Process as Segments'): Number of frames that overlap between consecutive segments when they are defined and processed. For example, if Window Size is 100 and Overlap is 20, segment 1 might be frames 0-99, segment 2 might be frames 80-179 internally for processing, leading to an output overlap for smoother merging. Common values: 15-30 frames. Should be less than 'Window Size'."
+        )
+        self.decode_chunk_size = gr.Slider(
+            2, 32, value=vram_config['decode_chunk_size'], step=1,
+            label="Decode Chunk Size",
+            info="Number of frames to decode at once during VAE decoding. Higher values = faster processing but more VRAM usage. Auto-detected based on your GPU (RTX 6000 Ada = 16). Reduce if you encounter OOM errors."
         )
         self.process_as_segments_var = gr.Checkbox(
             label="Process as Segments (Low VRAM Mode)", 
@@ -286,6 +324,7 @@ class DepthCrafterWebUI(BaseWebUI):
                     gr.Markdown("### Frame & Segment Control")
                     self.window_size.render()
                     self.overlap.render()
+                    self.decode_chunk_size.render()
                     self.target_fps.render()
                     self.process_length.render()
                     self.save_final_output_json_var.render()
@@ -311,8 +350,9 @@ class DepthCrafterWebUI(BaseWebUI):
             with gr.Row():
                 start_btn = gr.Button("Start", variant="primary")
                 cancel_btn = gr.Button("Cancel")
+                clear_vram_btn = gr.Button("Clear VRAM", variant="secondary")
                 remerge_btn = gr.Button("Re-Merge Segments")
-            
+
             self.progress.render()
             self.status_message_var.render()
 
@@ -354,7 +394,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 self.guidance_scale, self.inference_steps, self.seed,
                 self.cpu_offload, self.use_cudnn_benchmark,
                 self.process_length, self.target_fps,
-                self.window_size, self.overlap,
+                self.window_size, self.overlap, self.decode_chunk_size,
                 self.process_as_segments_var, self.save_final_output_json_var,
                 self.merge_output_format_var, self.merge_alignment_method_var,
                 self.merge_dither_var, self.merge_dither_strength_var,
@@ -377,7 +417,13 @@ class DepthCrafterWebUI(BaseWebUI):
             inputs=[],
             outputs=[self.status_message_var]
         )
-        
+
+        clear_vram_btn.click(
+            fn=self.clear_vram_memory,
+            inputs=[],
+            outputs=[self.status_message_var]
+        )
+
         remerge_btn.click(
             fn=self.remerge_segments,
             inputs=[
@@ -399,7 +445,7 @@ class DepthCrafterWebUI(BaseWebUI):
             self.guidance_scale, self.inference_steps, self.seed,
             self.cpu_offload, self.use_cudnn_benchmark,
             self.process_length, self.target_fps,
-            self.window_size, self.overlap,
+            self.window_size, self.overlap, self.decode_chunk_size,
             self.process_as_segments_var, self.save_final_output_json_var,
             self.merge_output_format_var, self.merge_alignment_method_var,
             self.merge_dither_var, self.merge_dither_strength_var,
@@ -420,11 +466,15 @@ class DepthCrafterWebUI(BaseWebUI):
         """Starts the depth estimation processing"""
         import logging
         logger = logging.getLogger(__name__)
-        
+
+        # CRITICAL: Clear stop_event at the start of new processing
+        self.stop_event.clear()
+        logger.debug("stop_event cleared for new processing job")
+
         # Extract parameters from args
         (input_path, output_path, guidance_scale, inference_steps, seed,
          cpu_offload, use_cudnn_benchmark, process_length, target_fps,
-         window_size, overlap, process_as_segments, save_final_json,
+         window_size, overlap, decode_chunk_size, process_as_segments, save_final_json,
          merge_output_format, merge_alignment_method, merge_dither,
          merge_dither_strength, merge_gamma_correct, merge_gamma_value,
          merge_percentile_norm, merge_norm_low_perc, merge_norm_high_perc,
@@ -462,9 +512,14 @@ class DepthCrafterWebUI(BaseWebUI):
             target_width = int(target_width)
             min_frames_to_keep_npz = int(min_frames_to_keep_npz)
             
+            logger.info("="*60)
+            logger.info("PROCESSING STARTED - Actual Values Being Used")
+            logger.info("="*60)
             logger.info(f"Parameters: steps={inference_steps}, seed={seed}, cudnn_benchmark={use_cudnn_benchmark}")
             logger.info(f"Window: size={window_size}, overlap={overlap}")
             logger.info(f"Target resolution: {target_width}x{target_height}")
+            logger.info(f"CPU Offload: {cpu_offload}")
+            logger.info("="*60)
             
             progress(0, desc="Initializing DepthCrafter...")
             
@@ -478,6 +533,10 @@ class DepthCrafterWebUI(BaseWebUI):
                 local_files_only=use_local_models_only,
                 disable_xformers=disable_xformers,
             )
+
+            # Set PyTorch CUDA memory config to reduce fragmentation
+            import os
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
             logger.info("Model initialized successfully")
             
             progress(0.1, desc="Scanning for videos...")
@@ -771,25 +830,58 @@ class DepthCrafterWebUI(BaseWebUI):
                     logger.info("Full video processing completed")
                 
                 logger.info(f"Completed video {video_idx + 1}/{total_videos}: {original_basename}")
-            
+
+                # Clear GPU memory between videos to prevent accumulation
+                try:
+                    import torch
+                    import gc
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    logger.debug(f"Cleared GPU memory after processing video {video_idx + 1}")
+                except Exception as e:
+                    logger.warning(f"Failed to clear memory after video {video_idx + 1}: {e}")
+
             progress(1.0, desc="Processing completed!")
             logger.info("=" * 80)
             logger.info("Processing completed successfully!")
             logger.info("=" * 80)
+
+            # Clean up large objects to prevent memory accumulation
+            try:
+                del demo
+                logger.debug("Deleted DepthCrafter demo object")
+            except Exception as e:
+                logger.warning(f"Failed to delete demo object: {e}")
+
+            # CRITICAL: Clear stop_event after processing completes
+            self.stop_event.clear()
+            logger.debug("stop_event cleared after processing completion")
+
             return "Processing completed successfully!", 100
-            
+
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}"
             traceback_str = traceback.format_exc()
-            
+
+            # Clean up large objects even on error
+            try:
+                del demo
+                logger.debug("Deleted DepthCrafter demo object after error")
+            except Exception as cleanup_e:
+                logger.warning(f"Failed to delete demo object after error: {cleanup_e}")
+
             # Log to terminal
             logger.error("=" * 80)
             logger.error("ERROR during processing:")
             logger.error(error_msg)
             logger.error(traceback_str)
             logger.error("=" * 80)
-            
+
+            # CRITICAL: Clear stop_event after error
+            self.stop_event.clear()
+            logger.debug("stop_event cleared after processing error")
+
             # Return error to UI
             return f"{error_msg}\n\nSee terminal for full traceback.", 0
 
@@ -797,7 +889,7 @@ class DepthCrafterWebUI(BaseWebUI):
         """Stop the current processing"""
         import logging
         logger = logging.getLogger(__name__)
-        
+
         logger.warning("Cancel requested by user")
         self.stop_event.set()
         return "⚠️ Cancellation requested - will stop after current segment"
@@ -884,17 +976,62 @@ class DepthCrafterWebUI(BaseWebUI):
             
             progress(1.0, desc="Re-merging completed!")
             logger.info("Re-merging completed for all found metadata files")
-            return "Re-merging completed successfully!", 10
             
+            # CRITICAL: Clear stop_event after re-merge completes
+            self.stop_event.clear()
+            logger.debug("stop_event cleared after re-merge completion")
+            
+            return "Re-merging completed successfully!", 10
+
         except Exception as e:
             import traceback
             error_msg = f"Error during re-merge: {str(e)}"
             traceback_str = traceback.format_exc()
-            
+
             logger.error("=" * 80)
             logger.error("ERROR during re-merge:")
             logger.error(error_msg)
             logger.error(traceback_str)
             logger.error("=" * 80)
             
+            # CRITICAL: Clear stop_event after re-merge error
+            self.stop_event.clear()
+            logger.debug("stop_event cleared after re-merge error")
+
             return f"{error_msg}\n\nSee terminal for full traceback.", 0
+
+    def clear_vram_memory(self):
+        """Clear VRAM cache and return status message"""
+        import logging
+        import gc
+        import torch
+        logger = logging.getLogger(__name__)
+
+        try:
+            if not torch.cuda.is_available():
+                logger.warning("CUDA not available. No VRAM to clear.")
+                return "CUDA not available - no VRAM to clear"
+
+            # Get VRAM usage before clearing
+            allocated_before = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved_before = torch.cuda.memory_reserved(0) / (1024**3)
+
+            # Clear CUDA cache and run garbage collection
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            # Get VRAM usage after clearing
+            allocated_after = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved_after = torch.cuda.memory_reserved(0) / (1024**3)
+
+            freed_reserved = reserved_before - reserved_after
+            freed_allocated = allocated_before - allocated_after
+
+            logger.info(f"VRAM cleared: Freed {freed_reserved:.2f} GB reserved ({reserved_before:.2f} → {reserved_after:.2f} GB)")
+            logger.info(f"  Allocated: {allocated_before:.2f} → {allocated_after:.2f} GB")
+
+            return f"✅ VRAM cleared: Freed {freed_reserved:.2f} GB (Reserved: {reserved_before:.2f} → {reserved_after:.2f} GB)"
+
+        except Exception as e:
+            logger.error(f"Error clearing VRAM: {e}", exc_info=True)
+            return f"Error clearing VRAM: {str(e)}"

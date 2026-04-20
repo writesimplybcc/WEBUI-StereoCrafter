@@ -1644,8 +1644,15 @@ class SplatterGUI(ThemedTk):
 
             # --- Finalize FFmpeg process ---
             if ffmpeg_process.stdin:
-                ffmpeg_process.stdin.close() # Close the pipe to signal end of input
-            
+                try:
+                    if not ffmpeg_process.stdin.closed:
+                        ffmpeg_process.stdin.close() # Close the pipe to signal end of input
+                except OSError as close_err:
+                    # "flush of closed file" - FFmpeg already exited
+                    logger.warning(f"FFmpeg stdin already closed: {close_err}")
+                except (BrokenPipeError, ValueError):
+                    pass  # Pipe already closed or broken, ignore
+
             # Wait for the process to finish and get output
             stdout, stderr = ffmpeg_process.communicate(timeout=120)
             

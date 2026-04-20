@@ -10,6 +10,7 @@ import glob
 import time
 import json
 import shutil
+import subprocess
 import numpy as np
 import cv2
 import torch
@@ -640,11 +641,87 @@ class MergingWebUI:
                     
                     # Control Buttons
                     with gr.Row():
-                        start_button = gr.Button("Start Blending", variant="primary")
+                        blend_current_button = gr.Button("Blend Current Video", variant="primary")
+                        blend_all_button = gr.Button("Blend All Videos", variant="secondary")
                         stop_button = gr.Button("Stop", variant="secondary")
             
             # Event Handlers
-            start_button.click(
+            def start_blend_current(*args, progress=gr.Progress()):
+                """Blend only the currently selected video from preview"""
+                # Extract parameters from args
+                (inpainted_folder, original_folder, mask_folder, output_folder,
+                 use_gpu, pad_to_16_9, output_format, batch_chunk_size,
+                 enable_color_transfer, mask_binarize_threshold, mask_dilate_kernel_size,
+                 mask_blur_kernel_size, shadow_shift, shadow_decay_gamma,
+                 shadow_start_opacity, shadow_opacity_decay, shadow_min_opacity,
+                 preview_video_name) = args
+
+                if not preview_video_name:
+                    yield "Error: No video selected", 0
+                    return
+
+                # Convert splatted filename to inpainted filename
+                # Preview shows splatted files (e.g., "name_3840_splatted4.mp4")
+                # But we need inpainted files (e.g., "name_inpainted.mp4")
+                single_video_name = preview_video_name
+                if '_splatted4' in preview_video_name or '_splatted2' in preview_video_name:
+                    # Extract core name (remove _WIDTH_splattedX.mp4)
+                    core_with_width = preview_video_name.rsplit('_splatted', 1)[0]
+                    # Remove the width suffix
+                    last_underscore_idx = core_with_width.rfind('_')
+                    if last_underscore_idx != -1:
+                        core_name = core_with_width[:last_underscore_idx]
+                        # Look for matching inpainted file
+                        inpainted_candidates = [
+                            f"{core_name}_inpainted.mp4",
+                            f"{core_name}_inpainted_sbs.mp4",
+                            f"{core_name}_inpainted_right_eye.mp4"
+                        ]
+                        # Check which one exists in inpainted folder
+                        found = False
+                        for candidate in inpainted_candidates:
+                            candidate_path = os.path.join(inpainted_folder, candidate)
+                            if os.path.exists(candidate_path):
+                                single_video_name = candidate
+                                found = True
+                                print(f"[DEBUG] Mapped splatted '{preview_video_name}' -> inpainted '{single_video_name}'")
+                                break
+                        if not found:
+                            yield f"Error: No matching inpainted file found for '{preview_video_name}'.\nExpected one of: {', '.join(inpainted_candidates)}\nIn folder: {inpainted_folder}", 0
+                            return
+                    else:
+                        yield f"Error: Cannot parse core name from '{preview_video_name}'", 0
+                        return
+
+                # Call start_processing with single_video_name parameter
+                yield from self.start_processing(
+                    inpainted_folder, original_folder, mask_folder, output_folder,
+                    use_gpu, pad_to_16_9, output_format, batch_chunk_size,
+                    enable_color_transfer, mask_binarize_threshold, mask_dilate_kernel_size,
+                    mask_blur_kernel_size, shadow_shift, shadow_decay_gamma,
+                    shadow_start_opacity, shadow_opacity_decay, shadow_min_opacity,
+                    single_video_name=single_video_name,
+                    progress=progress
+                )
+            
+            blend_current_button.click(
+                fn=start_blend_current,
+                inputs=[
+                    inpainted_folder_input, original_folder_input,
+                    mask_folder_input, output_folder_input,
+                    use_gpu_input, pad_to_16_9_input,
+                    output_format_input, batch_chunk_size_input,
+                    enable_color_transfer_input,
+                    mask_binarize_threshold_input, mask_dilate_kernel_input,
+                    mask_blur_kernel_input, shadow_shift_input,
+                    shadow_gamma_input, shadow_start_opacity_input,
+                    shadow_opacity_decay_input, shadow_min_opacity_input,
+                    preview_video_dropdown
+                ],
+                outputs=[status_label, progress_bar]
+            )
+            
+            blend_all_button.click(
                 fn=self.start_processing,
                 inputs=[
                     inpainted_folder_input, original_folder_input,
@@ -792,9 +869,14 @@ class MergingWebUI:
                 )
             
             preview_video_dropdown.change(
-                fn=lambda folder, video: load_videos_for_preview(folder) if video else (gr.update(), None, "No video", gr.update(value=0, maximum=1)),
-                inputs=[mask_folder_input, preview_video_dropdown],
-                outputs=[preview_video_dropdown, preview_image, status_label, frame_slider]
+                fn=update_preview_from_slider,
+                inputs=[
+                    mask_folder_input, preview_video_dropdown, frame_slider, preview_source,
+                    use_gpu_input, mask_binarize_threshold_input, mask_dilate_kernel_input,
+                    mask_blur_kernel_input, shadow_shift_input, shadow_start_opacity_input,
+                    shadow_opacity_decay_input, shadow_min_opacity_input, shadow_gamma_input
+                ],
+                outputs=[preview_image, status_label, frame_slider]
             )
             
             # Navigation button handlers
@@ -861,7 +943,7 @@ class MergingWebUI:
         
         return interface
 
-    def start_processing(self, *args, progress=gr.Progress()):
+    def start_processing(self, *args, single_video_name=None, progress=gr.Progress()):
         # Extract parameters from args
         (inpainted_folder, original_folder, mask_folder, output_folder,
          use_gpu, pad_to_16_9, output_format, batch_chunk_size,
@@ -896,14 +978,26 @@ class MergingWebUI:
 
         import traceback
         try:
-            yield "Starting Batch Process...", 0
-            
+            if single_video_name:
+                yield f"Processing single video: {single_video_name}", 0
+            else:
+                yield "Starting Batch Process...", 0
+
             inpainted_videos = sorted(glob.glob(os.path.join(inpainted_folder, "*.mp4")))
             print(f"[DEBUG] Found {len(inpainted_videos)} videos in {inpainted_folder}")
             if not inpainted_videos:
                 print(f"[DEBUG] No videos found.")
                 yield "No .mp4 files found in inpainted video folder", 0
                 return
+
+            # Filter to single video if specified
+            if single_video_name:
+                filtered_videos = [v for v in inpainted_videos if os.path.basename(v) == single_video_name]
+                if not filtered_videos:
+                    yield f"Error: Video '{single_video_name}' not found", 0
+                    return
+                inpainted_videos = filtered_videos
+                print(f"[DEBUG] Filtering to single video: {single_video_name}")
 
             total_videos = len(inpainted_videos)
             
@@ -926,12 +1020,14 @@ class MergingWebUI:
                 
                 if base_name.endswith(inpaint_suffix):
                     core_name_with_width = base_name[:-len(inpaint_suffix)]
+                    # Determine if inpainted is SBS based on actual file dimensions
+                    # (done after opening the video reader below)
                 elif base_name.endswith(sbs_suffix):
                         core_name_with_width = base_name[:-len(sbs_suffix)]
-                        is_sbs_input = True
+                        is_sbs_input = True  # Explicit SBS suffix
                 elif base_name.endswith(webui_suffix):
                         core_name_with_width = base_name[:-len(webui_suffix)]
-                        is_sbs_input = True
+                        is_sbs_input = False  # Default single-eye output
                 else:
                     print(f"[DEBUG] Skipping {base_name} - Unknown suffix")
                     continue # Skip invalid files
@@ -984,9 +1080,34 @@ class MergingWebUI:
 
                 # --- 2. Setup Readers and Encoder ---
                 print(f"[DEBUG] Using splatted file: {os.path.basename(splatted_file_path)}")
+                yield f"Loading video readers for {base_name}...", current_percent
+
+                logger.info(f"Opening VideoReader for inpainted: {os.path.basename(inpainted_video_path)}")
                 inpainted_reader = VideoReader(inpainted_video_path, ctx=cpu(0))
+                logger.info(f"VideoReader opened for inpainted: {len(inpainted_reader)} frames")
+
+                logger.info(f"Opening VideoReader for splatted: {os.path.basename(splatted_file_path)}")
                 splatted_reader = VideoReader(splatted_file_path, ctx=cpu(0))
-                
+                logger.info(f"VideoReader opened for splatted: {len(splatted_reader)} frames")
+
+                # Auto-detect if inpainted video is SBS based on aspect ratio
+                # SBS videos have width >> height (typically width = 2 * single_eye_width)
+                inpainted_w = inpainted_reader[0].shape[1]
+                inpainted_h = inpainted_reader[0].shape[0]
+                if inpainted_w >= inpainted_h * 3.0:  # Very wide = definitely SBS (e.g., 7680x2160)
+                    is_sbs_input = True
+                    print(f"[DEBUG] Auto-detected inpainted as SBS: {inpainted_w}x{inpainted_h}")
+                elif inpainted_w >= inpainted_h * 1.5:  # Moderately wide (e.g., 3840x2160 could be either)
+                    # Use the suffix hint; if no explicit suffix, assume SBS if width is even multiple of typical sizes
+                    if base_name.endswith(inpaint_suffix):
+                        # Default _inpainted.mp4 - check if width matches common SBS sizes
+                        # 3840 could be 1920x2 (SBS) or single 4K eye
+                        # 7680 is almost certainly 3840x2 (SBS)
+                        is_sbs_input = (inpainted_w >= 7680)
+                        print(f"[DEBUG] Inpainted aspect ratio ambiguous ({inpainted_w}x{inpainted_h}), is_sbs={is_sbs_input}")
+                else:
+                    is_sbs_input = False
+
                 original_reader = None
                 if is_dual_input:
                     original_path = _find_video_by_core_name(original_folder, core_name)
@@ -996,16 +1117,35 @@ class MergingWebUI:
                     original_reader = splatted_reader # Placeholder
 
                 num_frames = len(inpainted_reader)
+                logger.info(f"Getting FPS and stream info for {base_name}...")
                 fps = inpainted_reader.get_avg_fps()
+                logger.info(f"FPS: {fps}, frames: {num_frames}")
                 video_stream_info = get_video_stream_info(inpainted_video_path)
+                logger.info(f"Stream info retrieved for {base_name}")
                 
                 # Determine Output Dimensions
+                # Use the inpainted video dimensions to determine the final resolution
+                # The inpainted video contains either:
+                #   - Single eye (is_sbs_input=False): hires = inpainted dimensions
+                #   - Full SBS pair (is_sbs_input=True): hires = half the width
+                
+                # Also sample the splatted video for reference
                 sample_splatted = splatted_reader[0].asnumpy()
                 H_splat, W_splat, _ = sample_splatted.shape
-                if is_dual_input:
-                    hires_H, hires_W = H_splat, W_splat // 2
+                
+                if is_sbs_input:
+                    # Inpainted is SBS, so each eye is half the width
+                    hires_H = inpainted_h
+                    hires_W = inpainted_w // 2
                 else:
-                    hires_H, hires_W = H_splat // 2, W_splat // 2
+                    # Inpainted is single eye, use its dimensions directly
+                    hires_H = inpainted_h
+                    hires_W = inpainted_w
+                
+                print(f"[DEBUG] Splatted dimensions: {W_splat}x{H_splat}")
+                print(f"[DEBUG] Inpainted dimensions: {inpainted_w}x{inpainted_h} (is_sbs={is_sbs_input})")
+                print(f"[DEBUG] Computed hires_H={hires_H}, hires_W={hires_W}")
+                print(f"[DEBUG] is_dual_input={is_dual_input}")
 
                 if original_reader is None and output_format != "Right-Eye Only":
                     # Fallback if original is missing
@@ -1046,182 +1186,601 @@ class MergingWebUI:
                 print(f"[DEBUG] Starting FFmpeg process for: {output_path}")
                 print(f"[DEBUG] Params: {output_width}x{output_height}, fps={fps}")
                 print(f"[DEBUG] CUDA_AVAILABLE in merging_ui BEFORE: {sc_util.CUDA_AVAILABLE}")
-                
-                # Temporarily disable CUDA to force CPU encoding (libx264 CRF=18) to match GUI
-                original_cuda = sc_util.CUDA_AVAILABLE
-                sc_util.CUDA_AVAILABLE = False
-                
-                print(f"[DEBUG] CUDA_AVAILABLE in merging_ui AFTER: {sc_util.CUDA_AVAILABLE}")
-                print(f"[DEBUG] video_stream_info: {video_stream_info}")
-                
-                ffmpeg_process = start_ffmpeg_pipe_process(
-                    content_width=output_width,
-                    content_height=output_height,
-                    final_output_mp4_path=output_path,
-                    fps=fps, 
-                    video_stream_info=video_stream_info,
-                    pad_to_16_9=pad_to_16_9,
-                    output_format_str=output_format_current,
-                    debug_label="WEBUI_MERGE"
-                )
-                
-                # Restore CUDA flag
-                sc_util.CUDA_AVAILABLE = original_cuda
-                
-                print(f"[DEBUG] FFmpeg started: {ffmpeg_process}")
-                
-                # Print encoder info if available
-                if ffmpeg_process and hasattr(ffmpeg_process, 'sc_encode_flags'):
-                    flags = ffmpeg_process.sc_encode_flags
-                    print(f"[DEBUG] Encoder flags: codec={flags.get('enc_codec')}, {flags.get('quality_mode')}={flags.get('quality_value')}")
-                    print(f"[DEBUG] Full encoder info: {flags}")
 
-                if not ffmpeg_process:
-                    yield f"Error starting FFmpeg for {base_name}", current_percent
+                # Validate dimensions before starting FFmpeg (must be even for most codecs)
+                if output_width % 2 != 0 or output_height % 2 != 0:
+                    logger.error(f"Invalid output dimensions: {output_width}x{output_height}. Width and height must be even numbers for codec compatibility.")
+                    yield f"Error: Invalid output dimensions ({output_width}x{output_height}). Must be even.", current_percent
                     continue
+
+                # Use temporary file during encoding to prevent corrupted files on failure
+                # Insert .tmp before the .mp4 extension so FFmpeg recognizes the format
+                temp_output_path = output_path.replace(".mp4", ".temp.mp4")
+
+                # Determine encoding strategy based on environment and resolution
+                original_cuda = sc_util.CUDA_AVAILABLE
+                is_high_res = (output_width >= 3840 or output_height >= 2160)
+                is_cloud_env = (
+                    os.environ.get('RUNPOD_POD_ID') or
+                    os.environ.get('VAST_CONTAINERLABEL') or
+                    os.environ.get('PAPERSPACE_MACHINE_ID')
+                )
+
+                # Enable NVENC GPU encoding for cloud environments or high-VRAM systems
+                if is_cloud_env or (sc_util.CUDA_AVAILABLE and not is_high_res):
+                    sc_util.CUDA_AVAILABLE = True  # Enable NVENC
+                    logger.info(f"NVENC GPU encoding enabled (cloud={is_cloud_env}, high_res={is_high_res})")
+                elif is_high_res and sc_util.CUDA_AVAILABLE:
+                    # For 4K+ on local systems, check if we have enough VRAM
+                    try:
+                        total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                        if total_vram_gb >= 16:  # RTX 4070+, A5000, RTX 6000 Ada, etc.
+                            sc_util.CUDA_AVAILABLE = True
+                            logger.info(f"NVENC GPU encoding enabled (VRAM: {total_vram_gb:.1f}GB)")
+                        else:
+                            sc_util.CUDA_AVAILABLE = False
+                            logger.info(f"NVENC disabled for 4K local merge (VRAM: {total_vram_gb:.1f}GB < 16GB). Using CPU encoding.")
+                    except Exception:
+                        sc_util.CUDA_AVAILABLE = False
+                        logger.warning("Could not detect VRAM, defaulting to CPU encoding for 4K merge.")
+                else:
+                    sc_util.CUDA_AVAILABLE = False
+                    logger.info("NVENC not available, using CPU encoding.")
+
+                print(f"[DEBUG] CUDA_AVAILABLE in merging_ui: {sc_util.CUDA_AVAILABLE}")
+                print(f"[DEBUG] video_stream_info: {video_stream_info}")
+
+                # NOTE: FFmpeg process will be started inside the retry while loop below
+                # Don't start it here to avoid creating orphaned processes
+
+                # Initialize error tracking variables (will be reset in each retry)
+                ffmpeg_errors = []
+                ffmpeg_error_lock = threading.Lock()
+
+                # Helper function to read FFmpeg stderr (defined here, used inside the while loop)
+                def read_ffmpeg_stderr():
+                    """Read FFmpeg stderr continuously to prevent buffer overflow and capture errors"""
+                    import time
+                    try:
+                        if ffmpeg_process.stderr:
+                            while ffmpeg_process.poll() is None:
+                                try:
+                                    line = ffmpeg_process.stderr.readline()
+                                    if line:
+                                        if isinstance(line, bytes):
+                                            line = line.decode('utf-8', errors='replace')
+                                        line = line.strip()
+                                        if line:
+                                            with ffmpeg_error_lock:
+                                                ffmpeg_errors.append(line)
+                                            logger.debug(f"FFmpeg: {line}")
+                                    else:
+                                        # Check if process is still running to avoid infinite loop
+                                        if ffmpeg_process.poll() is not None:
+                                            break
+                                        time.sleep(0.05)  # Brief sleep before retry
+                                except (IOError, OSError):
+                                    # Pipe may be closed
+                                    break
+                                except Exception:
+                                    time.sleep(0.05)  # Brief sleep on error
+                    except Exception as e:
+                        logger.warning(f"Error reading FFmpeg stderr: {e}")
+
+                    # Read any remaining stderr
+                    try:
+                        if ffmpeg_process.stderr:
+                            remaining = ffmpeg_process.stderr.read()
+                            if remaining:
+                                if isinstance(remaining, bytes):
+                                    remaining = remaining.decode('utf-8', errors='replace')
+                                for line in remaining.split('\n'):
+                                    line = line.strip()
+                                    if line:
+                                        with ffmpeg_error_lock:
+                                            ffmpeg_errors.append(line)
+                    except:
+                        pass
+
+                # Validate frame count before starting
+                if num_frames <= 0:
+                    logger.error(f"No frames to process for {base_name}. Skipping.")
+                    yield f"Error: No frames to encode for {base_name}", current_percent
+                    continue
+
+                # Initialize frame counter for tracking progress and errors
+                frame_count = 0
+
+                # Track last successful frame for restart purposes
+                last_successful_frame = 0
 
                 # --- 3. Process Chunks ---
                 print(f"[DEBUG] Starting processing chunks...")
                 chunk_size = batch_chunk_size
-                for frame_start in range(0, num_frames, chunk_size):
-                    if self.stop_event.is_set(): break
-                    
-                    # Update progress every chunk
-                    video_progress = frame_start / num_frames
-                    overall_progress = (i + video_progress) / total_videos * 100
-                    yield f"Processing {base_name}: {int(video_progress*100)}% ({frame_start}/{num_frames})", overall_progress
 
-                    frame_end = min(frame_start + chunk_size, num_frames)
-                    indices = list(range(frame_start, frame_end))
-                    
-                    inpainted_np = inpainted_reader.get_batch(indices).asnumpy()
-                    splatted_np = splatted_reader.get_batch(indices).asnumpy()
-                    
-                    inpainted_tensor = torch.from_numpy(inpainted_np).permute(0, 3, 1, 2).float() / 255.0
-                    splatted_tensor = torch.from_numpy(splatted_np).permute(0, 3, 1, 2).float() / 255.0
-                    
-                    inpainted_chunk = inpainted_tensor[:, :, :, inpainted_tensor.shape[3]//2:] if is_sbs_input else inpainted_tensor
-                    _, _, H_chunk, W_chunk = splatted_tensor.shape
+                # Reduce chunk size for high-res merges to prevent VRAM exhaustion
+                # NVENC needs VRAM for encoding, so we must leave room for both
+                is_high_res_merge = output_width >= 3840 or output_height >= 2160
+                if is_high_res_merge:
+                    # Cap chunk size to avoid VRAM contention with NVENC
+                    # 4K Half SBS: ~16MB/frame, 8K Full SBS: ~64MB/frame
+                    # Limit to ~300MB max for frame buffers during merge
+                    if output_width >= 7680:
+                        chunk_size = min(chunk_size, 12)   # 8K: max 12 frames (~512MB)
+                    else:
+                        chunk_size = min(chunk_size, 16)  # 4K: max 16 frames (~256MB)
+                    logger.info(f"High-res merge detected ({output_width}x{output_height}). "
+                               f"Reduced chunk size from {batch_chunk_size} to {chunk_size} "
+                               f"to prevent VRAM contention with NVENC encoder.")
 
-                    if is_dual_input:
-                        if original_reader is not None:
-                            # For dual input, original_reader is separate file
-                            original_np = original_reader.get_batch(indices).asnumpy()
-                            original_left = torch.from_numpy(original_np).permute(0, 3, 1, 2).float() / 255.0
-                        else:
-                            original_left = torch.zeros_like(inpainted_chunk)
+                # NVENC fallback: track if we need to retry with CPU
+                nvenc_failed = False
+                nvenc_failed_at_frame = 0  # Track where NVENC failed
+                max_cpu_retries = 1  # Only retry once with CPU to avoid infinite loops
+                cpu_retry_attempt = 0
+                
+                # Wrap video processing in a retry loop for NVENC->CPU fallback
+                processing_completed = False
+                ffmpeg_finalized = False
+                while not processing_completed and cpu_retry_attempt <= max_cpu_retries:
+                    
+                    if cpu_retry_attempt > 0:
+                        logger.info(f"CPU encoding retry attempt {cpu_retry_attempt}/{max_cpu_retries}...")
+                        # Clean up previous failed attempt
+                        if os.path.exists(temp_output_path):
+                            try:
+                                os.remove(temp_output_path)
+                            except:
+                                pass
+                    
+                    # Reset state for retry
+                    frame_count = 0
+                    with ffmpeg_error_lock:
+                        ffmpeg_errors.clear()
+                    
+                    # Re-initialize FFmpeg process for this attempt
+                    if cpu_retry_attempt == 0:
+                        # First attempt - use whatever encoding was determined (NVENC or CPU)
+                        pass
+                    else:
+                        # Retry attempt - force CPU encoding
+                        sc_util.CUDA_AVAILABLE = False
+                        logger.info(f"Forcing CPU encoding for retry attempt...")
+
+                    logger.info(f"Starting FFmpeg pipe process for {base_name} ({output_width}x{output_height} @ {fps} fps)...")
+                    yield f"Starting FFmpeg encoder for {base_name}...", current_percent
+
+                    ffmpeg_process = start_ffmpeg_pipe_process(
+                        content_width=output_width,
+                        content_height=output_height,
+                        final_output_mp4_path=temp_output_path,
+                        fps=fps,
+                        video_stream_info=video_stream_info,
+                        pad_to_16_9=pad_to_16_9,
+                        output_format_str=output_format_current,
+                        debug_label="WEBUI_MERGE" if cpu_retry_attempt == 0 else "WEBUI_MERGE_CPU_RETRY"
+                    )
+                    
+                    # Restore CUDA flag if this was the first attempt
+                    if cpu_retry_attempt == 0:
+                        sc_util.CUDA_AVAILABLE = original_cuda                    
+                    if not ffmpeg_process:
+                        logger.error(f"Error starting FFmpeg for {base_name} (attempt {cpu_retry_attempt})")
+                        yield f"Error starting FFmpeg for {base_name}", current_percent
+                        break
+                    
+                    # Start stderr thread for this attempt
+                    stderr_thread = threading.Thread(target=read_ffmpeg_stderr, daemon=True)
+                    stderr_thread.start()
+                    
+                    logger.info(f"FFmpeg pipe started (attempt {cpu_retry_attempt}): {output_width}x{output_height} @ {fps} fps for {output_filename}, temp file: {os.path.basename(temp_output_path)}")
+
+                    # CRITICAL FIX: Preserve high-res chunk_size across retry attempts
+                    # Don't reset to batch_chunk_size inside the retry loop!
+                    # chunk_size is already set correctly above (lines 1299-1313)
+                    # chunk_size = batch_chunk_size  # ← REMOVED: This was causing retries to use wrong chunk size!
+                    nvenc_failed_this_attempt = False
+                    
+                    logger.info(f"Using chunk_size={chunk_size} for {num_frames} frames ({(num_frames + chunk_size - 1) // chunk_size} chunks total)")
+
+                    for frame_start in range(0, num_frames, chunk_size):
+                        if self.stop_event.is_set(): break
                         
-                        mask_raw = splatted_tensor[:, :, :, :W_chunk//2]
-                        warped_original = splatted_tensor[:, :, :, W_chunk//2:]
-                    else:
-                        # Quad input
-                        half_h, half_w = H_chunk // 2, W_chunk // 2
-                        original_left = splatted_tensor[:, :, :half_h, :half_w]
-                        mask_raw = splatted_tensor[:, :, half_h:, :half_w]
-                        warped_original = splatted_tensor[:, :, half_h:, half_w:]
+                        frame_end = min(frame_start + chunk_size, num_frames)
+                        chunk_frame_count = frame_end - frame_start
+                        
+                        # Debug: Log chunk details
+                        logger.info(f"Processing chunk: frames {frame_start}-{frame_end-1} ({chunk_frame_count} frames, chunk_size={chunk_size})")
 
-                    mask_np = mask_raw.permute(0, 2, 3, 1).numpy() # Move to CPU/numpy for mean
-                    mask_gray_np = np.mean(mask_np, axis=3)
-                    mask = torch.from_numpy(mask_gray_np).float().unsqueeze(1) # [B, 1, H, W]
-
-                    # Move to GPU if requested
-                    dev = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
-                    mask = mask.to(dev)
-                    inpainted_chunk = inpainted_chunk.to(dev)
-                    original_left = original_left.to(dev)
-                    warped_original = warped_original.to(dev)
-
-                    # Resize
-                    if inpainted_chunk.shape[2] != hires_H or inpainted_chunk.shape[3] != hires_W:
-                        inpainted_chunk = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
-                        mask = F.interpolate(mask, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
-
-                    # Color Transfer
-                    if enable_color_transfer:
-                        adjusted = []
-                        for idx in range(len(inpainted_chunk)):
-                            adj = apply_color_transfer(original_left[idx].cpu(), inpainted_chunk[idx].cpu())
-                            adjusted.append(adj.to(dev))
-                        inpainted_chunk = torch.stack(adjusted)
-
-                    # Mask Processing
-                    processed_mask = mask.clone()
-                    print(f"[DEBUG] Mask processing params: threshold={mask_binarize_threshold}, dilate={mask_dilate_kernel_size}, blur={mask_blur_kernel_size}, shadow_shift={shadow_shift}")
-                    print(f"[DEBUG] Mask shape before processing: {processed_mask.shape}, min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
-                    
-                    if mask_binarize_threshold >= 0:
-                        processed_mask = (processed_mask > mask_binarize_threshold).float()
-                        print(f"[DEBUG] After binarization: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
-                    
-                    if mask_dilate_kernel_size > 0:
-                        processed_mask = apply_mask_dilation(processed_mask, int(mask_dilate_kernel_size), use_gpu=(dev=="cuda"))
-                        print(f"[DEBUG] After dilation: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
-                    
-                    if mask_blur_kernel_size > 0:
-                        processed_mask = apply_gaussian_blur(processed_mask, int(mask_blur_kernel_size), use_gpu=(dev=="cuda"))
-                        print(f"[DEBUG] After blur: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
-                    
-                    if shadow_shift > 0:
-                        processed_mask = apply_shadow_blur(
-                            processed_mask, int(shadow_shift), shadow_start_opacity, 
-                            shadow_opacity_decay, shadow_min_opacity, shadow_decay_gamma, 
-                            use_gpu=(dev=="cuda")
-                        )
-                        print(f"[DEBUG] After shadow: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
-
-                    # Blending
-                    blended_right = warped_original * (1 - processed_mask) + inpainted_chunk * processed_mask
-
-                    # Assemble Final Output
-                    final_chunk = None
-                    if output_format_current == "Full SBS (Left-Right)":
-                        final_chunk = torch.cat([original_left, blended_right], dim=3)
-                    elif output_format_current == "Full SBS Cross-eye (Right-Left)":
-                        final_chunk = torch.cat([blended_right, original_left], dim=3)
-                    elif output_format_current == "Half SBS (Left-Right)":
-                        res_l = F.interpolate(original_left, size=(hires_H, hires_W // 2), mode='bilinear')
-                        res_r = F.interpolate(blended_right, size=(hires_H, hires_W // 2), mode='bilinear')
-                        final_chunk = torch.cat([res_l, res_r], dim=3)
-                    elif output_format_current == "Double SBS":
-                        sbs = torch.cat([original_left, blended_right], dim=3)
-                        final_chunk = F.interpolate(sbs, size=(hires_H*2, hires_W*2), mode='bilinear')
-                    elif output_format_current == "Anaglyph (Red/Cyan)":
-                        final_chunk = torch.cat([original_left[:, 0:1], blended_right[:, 1:3]], dim=1)
-                    elif output_format_current == "Anaglyph Half-Color":
-                        left_gray = original_left[:, 0] * 0.299 + original_left[:, 1] * 0.587 + original_left[:, 2] * 0.114
-                        left_gray = left_gray.unsqueeze(1)
-                        final_chunk = torch.cat([left_gray, blended_right[:, 1:3]], dim=1)
-                    else:
-                        final_chunk = blended_right
-
-                    # Write to pipe
-                    cpu_chunk = final_chunk.cpu()
-                    for chunk_idx, frame_tensor in enumerate(cpu_chunk):
+                        # Check FFmpeg health every chunk
                         if ffmpeg_process.poll() is not None:
-                            print(f"[DEBUG] FFmpeg process finish/died unexpectedly with code {ffmpeg_process.returncode}")
-                            raise RuntimeError("FFmpeg process finished early")
+                            logger.error(f"FFmpeg crashed at frame {frame_count}. Return code: {ffmpeg_process.returncode}")
+                            with ffmpeg_error_lock:
+                                if ffmpeg_errors:
+                                    logger.error(f"FFmpeg error log:")
+                                    for err_msg in ffmpeg_errors[-30:]:
+                                        logger.error(f"  {err_msg}")
 
-                        frame_np = frame_tensor.permute(1, 2, 0).numpy()
-                        frame_uint16 = (np.clip(frame_np, 0.0, 1.0) * 65535.0).astype(np.uint16)
-                        frame_bgr = cv2.cvtColor(frame_uint16, cv2.COLOR_RGB2BGR)
+                            # If NVENC was being used, try fallback to CPU
+                            current_codec = ffmpeg_process.sc_encode_flags.get('enc_codec', 'unknown') if hasattr(ffmpeg_process, 'sc_encode_flags') else 'unknown'
+                            if 'nvenc' in current_codec and not nvenc_failed:
+                                nvenc_failed = True
+                                nvenc_failed_this_attempt = True
+                                nvenc_failed_at_frame = frame_count
+                                logger.warning(f"NVENC ({current_codec}) failed at frame {frame_count}/{num_frames}. Will retry with CPU encoding...")
+
+                                # Clean up failed NVENC FFmpeg process
+                                try:
+                                    if ffmpeg_process.stdin:
+                                        try:
+                                            if not ffmpeg_process.stdin.closed:
+                                                ffmpeg_process.stdin.close()
+                                        except OSError:
+                                            pass
+                                    ffmpeg_process.kill()
+                                    ffmpeg_process.wait(timeout=10)
+                                except:
+                                    pass
+
+                                # Break out of chunk loop, while loop will handle retry with CPU
+                                break
+                            else:
+                                # Either not NVENC, or this is a CPU retry attempt, or NVENC already failed
+                                is_retry_attempt = cpu_retry_attempt > 0
+                                if is_retry_attempt:
+                                    logger.error(f"CPU encoding failed at frame {frame_count} during retry")
+                                else:
+                                    logger.error(f"FFmpeg crashed during processing at frame {frame_count}")
+
+                                yield f"Error: FFmpeg crashed at frame {frame_count}", current_percent
+
+                                # Clean up
+                                try:
+                                    if ffmpeg_process.stdin:
+                                        try:
+                                            if not ffmpeg_process.stdin.closed:
+                                                ffmpeg_process.stdin.close()
+                                        except OSError:
+                                            pass
+                                    ffmpeg_process.kill()
+                                except:
+                                    pass
+
+                                if os.path.exists(temp_output_path):
+                                    try:
+                                        os.remove(temp_output_path)
+                                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                                    except:
+                                        pass
+
+                                # Don't retry if this wasn't NVENC or we already retried
+                                if is_retry_attempt:
+                                    break  # Exit chunk loop, while loop will exit
+                                else:
+                                    break  # Exit chunk loop, continue to next video
+
+                        # Update progress every chunk (INSIDE the for loop!)
+                        video_progress = frame_start / num_frames
+                        overall_progress = (i + video_progress) / total_videos * 100
+                        
                         try:
-                            ffmpeg_process.stdin.write(frame_bgr.tobytes())
+                            yield f"Processing {base_name}: {int(video_progress*100)}% ({frame_start}/{num_frames})", overall_progress
+                        except Exception as yield_err:
+                            logger.warning(f"Yield skipped: {yield_err}")
+
+                        # CRITICAL: Log that we're about to process this chunk
+                        logger.info(f"▶️ STARTING processing for chunk {frame_start}-{frame_end-1}...")
+
+                        try:
+                            # frame_end already calculated above
+                            indices = list(range(frame_start, frame_end))
+
+                            inpainted_np = inpainted_reader.get_batch(indices).asnumpy()
+                            splatted_np = splatted_reader.get_batch(indices).asnumpy()
+
+                            logger.info(f"📥 Read {len(inpainted_np)} inpainted frames, {len(splatted_np)} splatted frames for chunk {frame_start}-{frame_end-1}")
+
+                            inpainted_tensor = torch.from_numpy(inpainted_np).permute(0, 3, 1, 2).float() / 255.0
+                            splatted_tensor = torch.from_numpy(splatted_np).permute(0, 3, 1, 2).float() / 255.0
+
+                            # Extract components from splatted tensor based on input type
+                            # Note: is_sbs_input and is_dual_input are already determined earlier in the function
+                            
+                            inpainted = inpainted_tensor[:, :, :, inpainted_tensor.shape[3]//2:] if is_sbs_input else inpainted_tensor
+                            _, _, H, W = splatted_tensor.shape
+
+                            if is_dual_input:
+                                # Handle dual input: left eye from original, right eye from inpainted
+                                original_np = original_reader.get_batch(indices).asnumpy()
+                                original_left = torch.from_numpy(original_np).permute(0, 3, 1, 2).float() / 255.0
+                                mask_raw = splatted_tensor[:, :, :, :W//2]
+                                warped_original = splatted_tensor[:, :, :, W//2:]
+                            else:
+                                # Single input: extract from quadrants
+                                original_left = splatted_tensor[:, :, :H//2, :W//2]
+                                mask_raw = splatted_tensor[:, :, H//2:, :W//2]
+                                warped_original = splatted_tensor[:, :, H//2:, W//2:]
+
+                            # Process mask
+                            mask_np = mask_raw.permute(0, 2, 3, 1).cpu().numpy()
+                            mask_gray_np = np.mean(mask_np, axis=3)
+                            mask = torch.from_numpy(mask_gray_np).float().unsqueeze(1)
+
+                            # Move to device
+                            use_gpu = use_gpu and torch.cuda.is_available()
+                            device = "cuda" if use_gpu else "cpu"
+                            mask, inpainted, original_left, warped_original = mask.to(device), inpainted.to(device), original_left.to(device), warped_original.to(device)
+
+                            # Resize if needed
+                            target_height, target_width = warped_original.shape[2], warped_original.shape[3]
+                            if inpainted.shape[2] != target_height or inpainted.shape[3] != target_width:
+                                inpainted = F.interpolate(inpainted, size=(target_height, target_width), mode='bicubic', align_corners=False)
+                                mask = F.interpolate(mask, size=(target_height, target_width), mode='bilinear', align_corners=False)
+
+                            # Color transfer
+                            if enable_color_transfer:
+                                adjusted_frames = []
+                                for frame_idx in range(inpainted.shape[0]):
+                                    adjusted_frame = apply_color_transfer(original_left[frame_idx].cpu(), inpainted[frame_idx].cpu())
+                                    adjusted_frames.append(adjusted_frame.to(device))
+                                inpainted = torch.stack(adjusted_frames)
+
+                            # Process mask
+                            processed_mask = mask.clone()
+                            if mask_binarize_threshold >= 0.0:
+                                processed_mask = (mask > mask_binarize_threshold).float()
+
+                            if mask_dilate_kernel_size > 0:
+                                processed_mask = apply_mask_dilation(processed_mask, mask_dilate_kernel_size, use_gpu)
+                            if mask_blur_kernel_size > 0:
+                                processed_mask = apply_gaussian_blur(processed_mask, mask_blur_kernel_size, use_gpu)
+                            if shadow_shift > 0:
+                                processed_mask = apply_shadow_blur(processed_mask, shadow_shift,
+                                                                   shadow_start_opacity,
+                                                                   shadow_opacity_decay,
+                                                                   shadow_min_opacity,
+                                                                   shadow_decay_gamma, use_gpu)
+
+                            # Blend right eye
+                            blended_right_eye = warped_original * (1 - processed_mask) + inpainted * processed_mask
+
+                            # Assemble final frame based on output format
+                            if output_format_current == "Full SBS (Left-Right)":
+                                final_chunk = torch.cat([original_left, blended_right_eye], dim=3)
+                            elif output_format_current == "Full SBS Cross-eye (Right-Left)":
+                                final_chunk = torch.cat([blended_right_eye, original_left], dim=3)
+                            elif output_format_current == "Half SBS (Left-Right)":
+                                resized_left = F.interpolate(original_left, size=(output_height, output_width // 2), mode='bilinear', align_corners=False)
+                                resized_right = F.interpolate(blended_right_eye, size=(output_height, output_width // 2), mode='bilinear', align_corners=False)
+                                final_chunk = torch.cat([resized_left, resized_right], dim=3)
+                            elif output_format_current == "Double SBS":
+                                sbs_chunk = torch.cat([original_left, blended_right_eye], dim=3)
+                                final_chunk = F.interpolate(sbs_chunk, size=(output_height * 2, output_width * 2), mode='bilinear', align_corners=False)
+                            elif output_format_current == "Anaglyph (Red/Cyan)":
+                                final_chunk = torch.cat([
+                                    original_left[:, 0:1, :, :],
+                                    blended_right_eye[:, 1:3, :, :]
+                                ], dim=1)
+                            elif output_format_current == "Anaglyph Half-Color":
+                                left_gray = original_left[:, 0, :, :] * 0.299 + original_left[:, 1, :, :] * 0.587 + original_left[:, 2, :, :] * 0.114
+                                left_gray = left_gray.unsqueeze(1)
+                                final_chunk = torch.cat([
+                                    left_gray,
+                                    blended_right_eye[:, 1:3, :, :]
+                                ], dim=1)
+                            else:
+                                # Default to Right-Eye Only
+                                final_chunk = blended_right_eye
+
+                            # Write frames to FFmpeg
+                            logger.info(f"✍️ WRITING {final_chunk.shape[0]} frames to FFmpeg for chunk {frame_start}-{frame_end-1}")
+                            cpu_chunk = final_chunk.cpu()
+                            for frame_tensor in cpu_chunk:
+                                frame_np = frame_tensor.permute(1, 2, 0).numpy()
+                                frame_uint16 = (np.clip(frame_np, 0.0, 1.0) * 65535.0).astype(np.uint16)
+                                frame_bgr = cv2.cvtColor(frame_uint16, cv2.COLOR_RGB2BGR)
+                                try:
+                                    ffmpeg_process.stdin.write(frame_bgr.tobytes())
+                                    frame_count += 1
+                                except BrokenPipeError:
+                                    logger.error(f"Broken pipe while writing frame to FFmpeg for chunk {frame_start}-{frame_end-1}")
+                                    raise
+                                except Exception as write_err:
+                                    logger.error(f"Error writing frame to FFmpeg: {write_err}")
+                                    raise
+
+                            logger.info(f"✅ COMPLETED chunk {frame_start}-{frame_end-1}, total frames written: {frame_count}")
+
                         except BrokenPipeError:
-                            print("[DEBUG] Broken Pipe Error writing to FFmpeg")
-                            raise
-                        except Exception as e:
-                            print(f"[DEBUG] Error writing frame {chunk_idx} of chunk {frame_start}: {e}")
+                            # FFmpeg crashed during frame writing - this will be caught by the outer error handler
+                            logger.warning(f"FFmpeg pipe broken during chunk {frame_start}-{frame_end-1}")
                             raise
 
-                # Close FFmpeg
-                if ffmpeg_process.stdin:
-                    ffmpeg_process.stdin.close()
-                ffmpeg_process.wait()
+                    # Check if FFmpeg crashed during this chunk
+                    if ffmpeg_process.poll() is not None:
+                        logger.error(f"FFmpeg crashed after writing frame {frame_count}!")
+                        # This will trigger the NVENC->CPU fallback in the outer loop
+                        break
 
-                # Move files to finished (simplified for WebUI)
-                yield f"Completed: {base_name}", ((i+1)/total_videos*100)
+                    # Exit the for loop normally if we've processed all chunks successfully
+                    # Then finalize FFmpeg
+                    if not ffmpeg_finalized:
+                        try:
+                            # Wait for FFmpeg with timeout and capture stderr
+                            try:
+                                stdout, stderr = ffmpeg_process.communicate(timeout=120)
+                                stderr_output = stderr
+                            except subprocess.TimeoutExpired:
+                                logger.error("FFmpeg process timed out during finalize. Forcing termination.")
+                                ffmpeg_process.kill()
+                                ffmpeg_process.wait(timeout=10)
+                                stderr_output = b"Timeout expired"
 
-            yield "Processing completed", 100
+                            if ffmpeg_process.returncode != 0:
+                                # Decode and log FFmpeg error output
+                                try:
+                                    ffmpeg_error_msg = stderr_output.decode('utf-8', errors='replace') if stderr_output else "No error output"
+                                except:
+                                    ffmpeg_error_msg = str(stderr_output) if stderr_output else "Unknown error"
+
+                                # Also include any real-time captured errors
+                                with ffmpeg_error_lock:
+                                    if ffmpeg_errors:
+                                        logger.error(f"FFmpeg real-time error log (last {len(ffmpeg_errors)} messages):")
+                                        for err_msg in ffmpeg_errors[-20:]:
+                                            logger.error(f"  {err_msg}")
+
+                                logger.error(f"FFmpeg encoding FAILED for {os.path.basename(output_path)}")
+                                logger.error(f"Return code: {ffmpeg_process.returncode}")
+                                logger.error(f"FFmpeg error output:\n{ffmpeg_error_msg}")
+                                logger.error(f"Debug info: grid={output_width}x{output_height}, fps={fps}, frames={frame_count}, format={output_format_current}")
+                                yield f"Error: FFmpeg encoding failed - {os.path.basename(output_path)}", current_percent
+
+                                # Delete incomplete temp file
+                                if os.path.exists(temp_output_path):
+                                    try:
+                                        os.remove(temp_output_path)
+                                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                                    except Exception as cleanup_err:
+                                        logger.warning(f"Failed to delete temp file: {cleanup_err}")
+
+                                ffmpeg_finalized = True
+                                break  # Break out of while loop, continue to next video
+                            else:
+                                logger.info(f"Successfully encoded video to {output_path}")
+                                if stderr_output:
+                                    logger.debug(f"FFmpeg stderr log:\n{stderr_output.decode('utf-8', errors='replace')}")
+                        except BrokenPipeError as pipe_err:
+                            logger.error(f"Broken pipe during FFmpeg finalization: {pipe_err}")
+                            logger.error(f"Frames written: {frame_count} / {num_frames}")
+                            # Read remaining stderr
+                            try:
+                                if ffmpeg_process.stderr:
+                                    stderr_output = ffmpeg_process.stderr.read()
+                                    logger.error(f"FFmpeg error output:\n{stderr_output.decode('utf-8', errors='replace')[:1000]}")
+                            except:
+                                pass
+                            yield f"Error: FFmpeg pipe broken - {os.path.basename(output_path)}", current_percent
+                            if os.path.exists(temp_output_path):
+                                try:
+                                    os.remove(temp_output_path)
+                                    logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                                except Exception as cleanup_err:
+                                    logger.warning(f"Failed to delete temp file: {cleanup_err}")
+                            break  # Break out of while loop
+                        except Exception as finalize_err:
+                            logger.error(f"Error during FFmpeg finalization: {finalize_err}")
+                            logger.error(f"Exception type: {type(finalize_err).__name__}")
+                            logger.error(f"Frames written: {frame_count} / {num_frames}")
+
+                            # Check if this is a stdin-related error that indicates FFmpeg crashed
+                            error_str = str(finalize_err).lower()
+                            is_stdin_error = any(keyword in error_str for keyword in [
+                                'flush', 'closed file', 'broken pipe', 'invalid argument',
+                                'i/o operation'
+                            ])
+
+                            if is_stdin_error and frame_count < num_frames:
+                                # FFmpeg crashed during finalization - trigger retry with CPU
+                                logger.warning(f"FFmpeg crashed during finalization (stdin error). Triggering CPU retry...")
+                                nvenc_failed_this_attempt = True
+                                nvenc_failed = True
+                                nvenc_failed_at_frame = frame_count
+                                processing_completed = False
+                                cpu_retry_attempt += 1
+
+                                if os.path.exists(temp_output_path):
+                                    try:
+                                        os.remove(temp_output_path)
+                                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                                    except Exception as cleanup_err:
+                                        logger.warning(f"Failed to delete temp file: {cleanup_err}")
+
+                                # Let the while loop retry with CPU encoding
+                                logger.info(f"Will retry with CPU encoding (attempt {cpu_retry_attempt}/{max_cpu_retries})...")
+                                continue  # Continue the while loop for CPU retry
+                            else:
+                                # Not a stdin error or already completed - treat as final failure
+                                yield f"Error: FFmpeg finalization failed - {str(finalize_err)}", current_percent
+                                # Delete temp file on failure
+                                if os.path.exists(temp_output_path):
+                                    try:
+                                        os.remove(temp_output_path)
+                                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                                    except Exception as cleanup_err:
+                                        logger.warning(f"Failed to delete temp file: {cleanup_err}")
+                                break  # Break out of while loop
+
+                    # Rename temp file to final path on success
+                    try:
+                        if os.path.exists(output_path):
+                            os.remove(output_path)  # Remove existing file if present
+                        os.rename(temp_output_path, output_path)
+                        logger.info(f"Renamed temp file to final output: {os.path.basename(output_path)}")
+                    except Exception as rename_err:
+                        logger.error(f"Failed to rename temp file to final output: {rename_err}")
+                        # If rename fails, try copying
+                        try:
+                            import shutil
+                            shutil.copy2(temp_output_path, output_path)
+                            os.remove(temp_output_path)
+                            logger.info(f"Copied temp file to final output (rename failed): {os.path.basename(output_path)}")
+                        except Exception as copy_err:
+                            logger.error(f"Failed to copy temp file to final output: {copy_err}")
+                            yield f"Error: Failed to save final output - {str(copy_err)}", current_percent
+                            break  # Break out of while loop
+
+                    # Success! Mark as completed and exit while loop
+                    processing_completed = True
+
+                # Exit the while loop if processing is completed
+                if processing_completed:
+                    break
+
+                # Check if we broke out of the chunk loop (FFmpeg crashed)
+                if not processing_completed and frame_count < num_frames:
+                    # Continue the while loop for CPU retry or exit
+                    continue
+                
+                # End of while loop for NVENC retry
+
+                # Only proceed if processing was successful
+                if processing_completed and frame_count == num_frames:
+                    # Move files to finished (simplified for WebUI)
+                    logger.info(f"✅ Successfully merged: {base_name} ({frame_count}/{num_frames} frames)")
+                    yield f"Completed: {base_name}", ((i+1)/total_videos*100)
+
+                    # Clear GPU memory between videos to prevent accumulation
+                    try:
+                        from dependency.stereocrafter_util import release_cuda_memory
+                        release_cuda_memory()
+                        logger.debug(f"Cleared GPU memory after processing video {i + 1}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear memory after video {i + 1}: {e}")
+
+                    # Explicitly delete large objects to prevent memory accumulation
+                    try:
+                        del inpainted_reader, splatted_reader
+                        if original_reader is not None:
+                            del original_reader
+                        logger.debug(f"Deleted video readers after processing video {i + 1}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete readers after video {i + 1}: {e}")
+                elif not processing_completed:
+                    # Processing was interrupted or failed after retries
+                    logger.error(f"❌ Failed to merge: {base_name} ({frame_count}/{num_frames} frames processed)")
+                    yield f"Error: Failed to merge {base_name} - encoding failed after retries", current_percent
+                else:
+                    # Processing completed but frame count doesn't match
+                    logger.warning(f"⚠️ Incomplete merge: {base_name} ({frame_count}/{num_frames} frames)")
+                    yield f"Warning: Incomplete merge for {base_name} ({frame_count}/{num_frames} frames)", current_percent
+
+            # Show appropriate final message based on overall success
+            # Check if we had any successful merges
+            if i > 0 or (processing_completed and frame_count == num_frames):
+                yield "✅ Processing completed - output files saved", 100
+            else:
+                yield "❌ Processing completed with errors - no output files created", 100
             
         except Exception as e:
             traceback.print_exc()

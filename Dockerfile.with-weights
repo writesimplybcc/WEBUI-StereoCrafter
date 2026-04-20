@@ -1,0 +1,61 @@
+# Dockerfile for StereoCrafter WEBUI with weights baked in
+# This creates a large image (~50GB) but eliminates the need for downloads
+
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    git \
+    git-lfs \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
+
+# Copy requirements first (for better caching)
+COPY requirements.txt requirements-docker.txt ./
+
+# Install Python packages
+RUN pip install --no-cache-dir -r requirements-docker.txt
+
+# Copy application code
+COPY . .
+
+# Download model weights during build (this makes the image large but fast to start)
+# Requires HF_TOKEN to be passed as build arg
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
+RUN if [ -n "$HF_TOKEN" ]; then \
+        echo "Downloading model weights during build..." && \
+        mkdir -p weights && cd weights && \
+        python -c "from huggingface_hub import login, snapshot_download; \
+                   login(token='${HF_TOKEN}'); \
+                   print('Downloading Stable Video Diffusion...'); \
+                   snapshot_download('stabilityai/stable-video-diffusion-img2vid-xt-1-1', local_dir='stable-video-diffusion-img2vid-xt-1-1', local_dir_use_symlinks=False); \
+                   print('Downloading DepthCrafter...'); \
+                   snapshot_download('tencent/DepthCrafter', local_dir='DepthCrafter', local_dir_use_symlinks=False); \
+                   print('Downloading StereoCrafter...'); \
+                   snapshot_download('TencentARC/StereoCrafter', local_dir='StereoCrafter', local_dir_use_symlinks=False); \
+                   print('All weights downloaded!')"; \
+    else \
+        echo "WARNING: HF_TOKEN not provided, weights not downloaded during build"; \
+    fi
+
+# Unset HF_TOKEN after build (security)
+ENV HF_TOKEN=
+
+# Make entrypoint executable
+RUN chmod +x runpod-docker-entrypoint.sh
+
+# Expose port
+EXPOSE 7860
+
+# Set entrypoint
+ENTRYPOINT ["/workspace/runpod-docker-entrypoint.sh"]

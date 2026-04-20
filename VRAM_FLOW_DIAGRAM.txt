@@ -1,0 +1,191 @@
+================================================================================
+DYNAMIC VRAM CONFIGURATION FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         USER STARTS PROCESSING                          │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    get_vram_config() is called                          │
+│                                                                         │
+│  1. Check if CUDA available                                            │
+│  2. Get total VRAM capacity (e.g., 48GB)                               │
+│  3. Clear cache: torch.cuda.empty_cache()                              │
+│  4. Get allocated memory (e.g., 41GB)                                  │
+│  5. Calculate free memory (e.g., 6.25GB)                               │
+│  6. Calculate effective VRAM:                                          │
+│     If free% > 80%: effective = total (GPU mostly idle)               │
+│     Else: effective = free * 1.2 (safety margin)                      │
+│                                                                         │
+│     Example with 41GB allocated:                                       │
+│     free% = 6.25/48 = 13.2% (<80%)                                    │
+│     effective = 6.25 * 1.2 = 7.5GB                                    │
+│                                                                         │
+│  7. Select tier based on effective VRAM:                               │
+│     < 8GB    → Ultra-conservative (decode=2, window=50)                │
+│     8-12GB   → Conservative (decode=3, window=60)                      │
+│     12-24GB  → Moderate (decode=6, window=80)                          │
+│     24-48GB  → Balanced (decode=10, window=110)                        │
+│     48GB+    → Optimized (decode=8, window=110)                        │
+│                                                                         │
+│  8. Log selected configuration                                         │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    _internal_infer() starts                             │
+│                                                                         │
+│  1. Call get_current_vram_usage()                                      │
+│     → Returns: {total, allocated, reserved, free, gpu_name}            │
+│                                                                         │
+│  2. Log pre-inference VRAM status                                      │
+│                                                                         │
+│  3. Estimate required VRAM:                                            │
+│     base = 8GB (for 100 frames @ 1080p)                                │
+│     resolution_factor = (height * width) / (1920 * 1080)               │
+│     frame_factor = num_frames / 100                                    │
+│     estimated = base * resolution_factor * frame_factor                │
+│                                                                         │
+│  4. Call check_vram_availability(estimated * 0.8)                      │
+│     → If insufficient: Log WARNING with suggestions                    │
+│     → If sufficient: Log INFO and proceed                              │
+│                                                                         │
+│  5. Clear cache before inference:                                      │
+│     torch.cuda.empty_cache()                                           │
+│     gc.collect()                                                       │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    _perform_inference() executes                        │
+│                                                                         │
+│  1. Pre-inference cleanup                                              │
+│  2. Call pipeline with selected settings                               │
+│  3. Post-inference cleanup                                             │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Pipeline Processing Loop                             │
+│                                                                         │
+│  For each segment (window):                                            │
+│    For each denoising step:                                            │
+│      1. Process latents                                                │
+│      2. Run UNet                                                       │
+│      3. Clear intermediate tensors:                                    │
+│         del noise_pred, latent_model_input                             │
+│      4. Continue to next step                                          │
+│                                                                         │
+│    After segment complete:                                             │
+│      1. Delete segment tensors:                                        │
+│         del video_latents_current, video_embeddings_current, latents   │
+│      2. Run memory cleanup:                                            │
+│         torch.cuda.empty_cache()                                       │
+│         gc.collect()                                                   │
+│      3. Move to next segment                                           │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PROCESSING COMPLETE                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+MEMORY USAGE PATTERN (Expected)
+================================================================================
+
+Time →
+Memory ↑
+
+48GB ┤                                                                    
+     │                                                                    
+40GB ┤              ╭─────╮     ╭─────╮     ╭─────╮                     
+     │             ╱       ╲   ╱       ╲   ╱       ╲                    
+30GB ┤            ╱         ╲ ╱         ╲ ╱         ╲                   
+     │           ╱           V           V           ╲                  
+20GB ┤          ╱                                     ╲                 
+     │         ╱                                       ╲                
+10GB ┤   ╭────╯                                         ╰────╮          
+     │  ╱                                                     ╲         
+ 0GB ┼─╯                                                       ╰────────
+     └──┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬─────
+        │    │    │    │    │    │    │    │    │    │    │    │
+      Start Load Enc  Seg1 Seg2 Seg3 Seg4 Seg5 Dec  Save End  Idle
+
+Legend:
+  Start: Initial state
+  Load:  Loading models
+  Enc:   Encoding frames
+  Seg:   Processing segments (peaks = inference, valleys = cleanup)
+  Dec:   Decoding results
+  Save:  Saving output
+  End:   Final cleanup
+  Idle:  Back to baseline
+
+
+================================================================================
+COMPARISON: OLD vs NEW BEHAVIOR
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ SCENARIO: RTX 6000 Ada with 41GB already allocated                      │
+└──────────────────────────────────────────────────────────────────────────┘
+
+OLD BEHAVIOR (Static):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ Check: Total VRAM = 48GB                                            │
+  │ Decision: Use 48GB tier settings                                    │
+  │   - decode_chunk_size = 24                                          │
+  │   - window_size = 200                                               │
+  │   - overlap = 40                                                    │
+  │                                                                     │
+  │ Result: Try to allocate 9.81GB                                      │
+  │         Only 6.25GB available                                       │
+  │         ❌ CRASH: OutOfMemoryError                                  │
+  └─────────────────────────────────────────────────────────────────────┘
+
+NEW BEHAVIOR (Dynamic):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ Check: Total VRAM = 48GB                                            │
+  │        Allocated = 41GB                                             │
+  │        Free = 6.25GB                                                │
+  │        Free % = 13.2% (<80% threshold)                              │
+  │                                                                     │
+  │ Strategy: GPU under load, use free memory with safety margin       │
+  │                                                                     │
+  │ Calculate: Effective = 6.25 * 1.2 = 7.5GB                         │
+  │                                                                     │
+  │ Decision: Use 8-12GB tier settings (ultra-conservative)            │
+  │   - decode_chunk_size = 3                                           │
+  │   - window_size = 60                                                │
+  │   - overlap = 10                                                    │
+  │                                                                     │
+  │ Pre-check: Estimate 10.16GB needed                                  │
+  │            6.25GB available                                         │
+  │            ⚠️  WARNING: Low VRAM, but proceeding with cleanup       │
+  │                                                                     │
+  │ Cleanup: Clear cache, run gc.collect()                              │
+  │          Now ~8GB available                                         │
+  │                                                                     │
+  │ Process: Very small batches, frequent cleanup                       │
+  │                                                                     │
+  │ Result: ✅ SUCCESS - Completes without OOM                          │
+  │         (Slower than with more VRAM, but stable)                   │
+  └─────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+KEY TAKEAWAY
+================================================================================
+
+The system now ADAPTS to your current GPU state, not just its maximum capacity.
+
+If your GPU is busy → Uses conservative settings
+If your GPU is idle → Uses optimized settings
+
+This prevents OOM errors while maximizing performance when possible.
+
+================================================================================

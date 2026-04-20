@@ -744,10 +744,19 @@ class SplatterWebUI:
         final_output_video_path = f"{os.path.splitext(output_video_path_base)[0]}{res_suffix}{suffix}.mp4"
 
         # --- Start FFmpeg pipe process ---
+        # Validate dimensions before starting FFmpeg (must be even for most codecs)
+        if grid_width % 2 != 0 or grid_height % 2 != 0:
+            logger.error(f"Invalid output dimensions: {grid_width}x{grid_height}. Width and height must be even numbers for codec compatibility.")
+            return False
+        
+        # Use temporary file during encoding to prevent corrupted files on failure
+        # Insert .tmp before the .mp4 extension so FFmpeg recognizes the format
+        temp_output_path = final_output_video_path.replace(".mp4", ".temp.mp4")
+        
         ffmpeg_process = start_ffmpeg_pipe_process(
             content_width=grid_width,
             content_height=grid_height,
-            final_output_mp4_path=final_output_video_path,
+            final_output_mp4_path=temp_output_path,  # Write to temp file first
             fps=processed_fps,
             video_stream_info=video_stream_info,
             user_output_crf=user_output_crf,
@@ -756,6 +765,8 @@ class SplatterWebUI:
         if ffmpeg_process is None:
             logger.error("Failed to start FFmpeg pipe. Aborting splatting task.")
             return False
+        
+        logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
 
         # --- Determine max_expected_raw_value for consistent Gamma ---
         max_expected_raw_value = 1.0
@@ -779,11 +790,16 @@ class SplatterWebUI:
         try:
             for i in range(0, num_frames, batch_size):
                 t_start_batch = time.perf_counter() # <--- TIMER START: Total Batch
-                if self.stop_event.is_set() or ffmpeg_process.poll() is not None:
-                    if ffmpeg_process.poll() is not None:
-                        logger.error("FFmpeg process terminated unexpectedly. Stopping frame processing.")
-                    else:
-                        logger.warning("Stop event received. Terminating FFmpeg process.")
+                
+                # Check if FFmpeg has crashed before processing next batch
+                if ffmpeg_process.poll() is not None:
+                    logger.error(f"FFmpeg process terminated unexpectedly at frame {frame_count}/{num_frames}")
+                    logger.error(f"FFmpeg return code: {ffmpeg_process.returncode}")
+                    encoding_successful = False
+                    break
+                    
+                if self.stop_event.is_set():
+                    logger.warning("Stop event received. Terminating FFmpeg process.")
                     encoding_successful = False
                     break
 
@@ -939,11 +955,29 @@ class SplatterWebUI:
                         video_grid_bottom = np.concatenate([occlusion_mask_numpy[j], right_video_numpy[j]], axis=1)
                         video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
 
+                    # Validate frame before sending to FFmpeg
+                    if video_grid.shape[0] != grid_height or video_grid.shape[1] != grid_width:
+                        logger.error(f"Frame dimension mismatch: expected {grid_width}x{grid_height}, got {video_grid.shape[1]}x{video_grid.shape[0]}")
+                        encoding_successful = False
+                        break
+                    
+                    if np.any(np.isnan(video_grid)) or np.any(np.isinf(video_grid)):
+                        logger.error(f"Invalid frame data (NaN/Inf detected) at frame {frame_count}. Check depth processing settings.")
+                        encoding_successful = False
+                        break
+
                     video_grid_uint16 = (np.clip(video_grid, 0.0, 1.0) * 65535.0).astype(np.uint16)
                     video_grid_bgr = cv2.cvtColor(video_grid_uint16, cv2.COLOR_RGB2BGR)
-                    
+
                     # --- SEND FRAME TO FFMPEG PIPE ---
-                    ffmpeg_process.stdin.write(video_grid_bgr.tobytes())
+                    try:
+                        ffmpeg_process.stdin.write(video_grid_bgr.tobytes())
+                    except BrokenPipeError as pipe_err:
+                        logger.error(f"Broken pipe while writing frame {frame_count} to FFmpeg. FFmpeg may have crashed.")
+                        logger.error(f"Check FFmpeg error output in finalization logs.")
+                        encoding_successful = False
+                        raise  # Re-raise to be caught by outer exception handler
+                    
                     frame_count += 1
 
                 t_end_write = time.perf_counter()
@@ -977,6 +1011,7 @@ class SplatterWebUI:
 
         except (IOError, BrokenPipeError) as e:
             logger.error(f"FFmpeg pipe error: {e}. Encoding may have failed.")
+            logger.error(f"Frame count at failure: {frame_count}/{num_frames}")
             encoding_successful = False
         finally:
             del stereo_projector
@@ -990,29 +1025,72 @@ class SplatterWebUI:
                     ffmpeg_process.stdin.close()
             except (BrokenPipeError, ValueError):
                 pass  # Pipe already closed, ignore
-            
+
             # Wait for the process to finish and get output
+            stderr_output = b""
             try:
                 stdout, stderr = ffmpeg_process.communicate(timeout=120)
+                stderr_output = stderr
             except ValueError:
                 # stdin already closed, just wait for process
                 ffmpeg_process.wait(timeout=120)
                 stdout, stderr = b'', b''
-            
+                stderr_output = b''
+            except subprocess.TimeoutExpired:
+                logger.error("FFmpeg process timed out during finalize. Forcing termination.")
+                ffmpeg_process.kill()
+                ffmpeg_process.wait(timeout=10)
+                stderr_output = b"Timeout expired"
+
             if self.stop_event.is_set():
                 ffmpeg_process.terminate()
                 logger.warning(f"FFmpeg encoding stopped by user for {os.path.basename(final_output_video_path)}.")
                 encoding_successful = False
             elif ffmpeg_process.returncode != 0:
-                logger.error(f"FFmpeg encoding failed for {os.path.basename(final_output_video_path)} (return code {ffmpeg_process.returncode}):\n{stderr.decode()}")
+                # Decode and log FFmpeg error output
+                try:
+                    ffmpeg_error_msg = stderr_output.decode('utf-8', errors='replace') if stderr_output else "No error output"
+                except:
+                    ffmpeg_error_msg = str(stderr_output) if stderr_output else "Unknown error"
+                
+                logger.error(f"FFmpeg encoding FAILED for {os.path.basename(final_output_video_path)}")
+                logger.error(f"Return code: {ffmpeg_process.returncode}")
+                logger.error(f"FFmpeg error output:\n{ffmpeg_error_msg}")
+                logger.error(f"Debug info: grid={grid_width}x{grid_height}, fps={processed_fps}, frames={frame_count}/{num_frames}, CRF={user_output_crf}")
                 encoding_successful = False
             else:
                 logger.info(f"Successfully encoded video to {final_output_video_path}")
-                logger.debug(f"FFmpeg stderr log:\n{stderr.decode()}")
+                if stderr_output:
+                    logger.debug(f"FFmpeg stderr log:\n{stderr_output.decode('utf-8', errors='replace')}")
         
         if not encoding_successful:
+            # Delete temporary file on failure to prevent corrupted files
+            if os.path.exists(temp_output_path):
+                try:
+                    os.remove(temp_output_path)
+                    logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to delete temp file {temp_output_path}: {cleanup_err}")
             return False
-
+        
+        # Rename temp file to final path on success
+        try:
+            if os.path.exists(final_output_video_path):
+                os.remove(final_output_video_path)  # Remove existing file if present
+            os.rename(temp_output_path, final_output_video_path)
+            logger.info(f"Renamed temp file to final output: {os.path.basename(final_output_video_path)}")
+        except Exception as rename_err:
+            logger.error(f"Failed to rename temp file to final output: {rename_err}")
+            # If rename fails, try copying
+            try:
+                import shutil
+                shutil.copy2(temp_output_path, final_output_video_path)
+                os.remove(temp_output_path)
+                logger.info(f"Copied temp file to final output (rename failed): {os.path.basename(final_output_video_path)}")
+            except Exception as copy_err:
+                logger.error(f"Failed to copy temp file to final output: {copy_err}")
+                return False
+        
         # --- Check for Low-Res Task BEFORE writing sidecar ---
         if is_low_res_task:
             
@@ -2439,7 +2517,7 @@ class SplatterWebUI:
             "finished_depth_folder": finished_depth_folder,
         }
 
-    def _run_batch_process(self, settings):
+    def _run_batch_process(self, settings, progress=gr.Progress()):
         """
         Batch processing entry point.
 
@@ -2529,8 +2607,12 @@ class SplatterWebUI:
                     logger.info("==> Stopping processing due to user request")
                     break
 
+                # Update progress
+                video_name = os.path.basename(video_path)
+                progress((idx / len(input_videos)), desc=f"Processing {idx+1}/{len(input_videos)}: {video_name}")
+
                 # Delegates all per-video work to the helper
-                tasks_processed, _ = self._process_single_video_tasks(
+                tasks_processed, any_success = self._process_single_video_tasks(
                     video_path=video_path,
                     settings=settings,
                     initial_overall_task_counter=overall_task_counter,
@@ -2540,13 +2622,58 @@ class SplatterWebUI:
                 )
 
                 overall_task_counter += tasks_processed
+                
+                # Clear GPU memory between videos to prevent accumulation
+                try:
+                    release_cuda_memory()
+                    logger.debug(f"Cleared GPU memory after processing video {idx + 1}")
+                except Exception as e:
+                    logger.warning(f"Failed to clear memory after video {idx + 1}: {e}")
+
+                # Log completion
+                if any_success:
+                    logger.info(f"✅ Completed: {video_name}")
+                else:
+                    logger.warning(f"⚠️ Failed or skipped: {video_name}")
+
+            # Final progress update
+            progress(1.0, desc="✅ Processing completed!")
+            logger.info(f"✅ Batch processing completed. Total tasks: {overall_task_counter}")
+            
+            # Update status label via thread-safe method
+            try:
+                # Write completion status to a file that UI can check
+                status_file = os.path.join(os.path.dirname(settings.get("output_splatted", ".")), ".splatting_status")
+                with open(status_file, "w") as f:
+                    f.write(f"completed:{overall_task_counter}")
+                logger.info(f"Status written to {status_file}")
+            except Exception as status_err:
+                logger.warning(f"Could not write status file: {status_err}")
 
         except Exception as e:
             logger.error(f"An unexpected error occurred during batch processing: {e}", exc_info=True)
+            # Write error status
+            try:
+                status_file = os.path.join(os.path.dirname(settings.get("output_splatted", ".")), ".splatting_status")
+                with open(status_file, "w") as f:
+                    f.write(f"error:{str(e)}")
+            except:
+                pass
+            # Return error status to UI (only works if not in thread)
+            return f"❌ Error: {str(e)}", 0
         finally:
             release_cuda_memory()
-            # In Gradio version, we don't need to use after() method
-            # The processing info will be handled by the UI components
+            # Write final status
+            try:
+                status_file = os.path.join(os.path.dirname(settings.get("output_splatted", ".")), ".splatting_status")
+                with open(status_file, "w") as f:
+                    if "error" in locals():
+                        f.write(f"error:{str(e)}")
+                    else:
+                        f.write("completed")
+                logger.debug(f"Status file written: {status_file}")
+            except Exception as status_err:
+                logger.debug(f"Could not write status file: {status_err}")
 
     def run_fusion_sidecar_generator(self):
         """Initializes and runs the FusionSidecarGenerator tool."""
@@ -2604,17 +2731,33 @@ class SplatterWebUI:
             # Find corresponding depth map (same base name)
             video_basename = os.path.splitext(selected_video)[0]
             depth_path = None
-            
+
+            # Try multiple matching strategies
             for df in depth_files:
                 depth_basename = os.path.splitext(os.path.basename(df))[0]
+                
+                # Strategy 1: Exact match
                 if depth_basename == video_basename:
                     depth_path = df
+                    logger.debug(f"Depth match (exact): {video_basename} -> {os.path.basename(df)}")
                     break
-            
+                
+                # Strategy 2: Video name matches depth without _depth suffix
+                if depth_basename.endswith('_depth') and depth_basename[:-6] == video_basename:
+                    depth_path = df
+                    logger.debug(f"Depth match (with _depth suffix): {video_basename} -> {os.path.basename(df)}")
+                    break
+                
+                # Strategy 3: Depth name (without _depth) matches video
+                if depth_basename == video_basename + '_depth':
+                    depth_path = df
+                    logger.debug(f"Depth match (video+_depth pattern): {video_basename} -> {os.path.basename(df)}")
+                    break
+
             if not depth_path:
-                # If no exact match, use first depth map as fallback
-                depth_path = depth_files[0]
-                logger.warning(f"No matching depth map found for {selected_video}, using {os.path.basename(depth_path)}")
+                # NO FALLBACK - require exact match to prevent wrong depth map usage
+                logger.error(f"No matching depth map found for {selected_video}. Available depth files: {[os.path.basename(d) for d in depth_files]}")
+                return None, f"⚠️ No matching depth map for {os.path.basename(selected_video)}. Ensure depth file is named '{os.path.splitext(os.path.basename(selected_video))[0]}_depth.mp4'", gr.Slider()
             
             # Get total frames first to validate
             import cv2
@@ -2735,14 +2878,29 @@ class SplatterWebUI:
             # Get first video and depth map from input folders
             video_files = self._scan_video_files(self.input_source_clips)
             depth_files = self._scan_video_files(self.input_depth_maps)
-            
+
             if not video_files or not depth_files:
                 return "⚠️ No video or depth files found in input folders", self.zero_disparity_anchor, None
-            
+
             video_path = video_files[0]
-            depth_path = depth_files[0]
+            video_basename = os.path.splitext(os.path.basename(video_path))[0]
             
-            logger.info(f"Running Auto-Converge analysis on: {os.path.basename(video_path)}")
+            # Find matching depth map for the first video
+            depth_path = None
+            for df in depth_files:
+                depth_basename = os.path.splitext(os.path.basename(df))[0]
+                
+                # Try exact match or _depth suffix pattern
+                if depth_basename == video_basename or depth_basename == video_basename + '_depth' or (depth_basename.endswith('_depth') and depth_basename[:-6] == video_basename):
+                    depth_path = df
+                    break
+            
+            if not depth_path:
+                # Fall back to first depth file only for auto-converge (it analyzes depth stats, not splatting)
+                depth_path = depth_files[0]
+                logger.warning(f"Auto-Converge: No matching depth for {os.path.basename(video_path)}, using {os.path.basename(depth_path)} for stats analysis")
+
+            logger.info(f"Running Auto-Converge analysis on: {os.path.basename(video_path)} with depth: {os.path.basename(depth_path)}")
             
             # Analyze depth map to find optimal convergence
             mode = self.auto_convergence_mode
@@ -2830,36 +2988,70 @@ class SplatterWebUI:
                 video_cap.release()
                 return None, 0
             
-            # Get total frames and clamp frame number
-            total_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            if total_frames == 0:
+            # Get total frames from both video and depth map
+            total_frames_video = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_frames_depth = int(depth_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            if total_frames_video == 0:
                 logger.error(f"Video has 0 frames: {video_path}")
                 video_cap.release()
                 depth_cap.release()
                 return None, 0
-            
+
+            if total_frames_depth == 0:
+                logger.error(f"Depth map has 0 frames: {depth_path}")
+                video_cap.release()
+                depth_cap.release()
+                return None, 0
+
+            # Use the minimum of both to avoid frame mismatch issues
+            total_frames = min(total_frames_video, total_frames_depth)
+
+            if total_frames_video != total_frames_depth:
+                logger.warning(f"Frame count mismatch: Video has {total_frames_video} frames, Depth has {total_frames_depth} frames. Using minimum: {total_frames}")
+
             frame_idx = max(0, min(frame_number, total_frames - 1))
-            
-            logger.info(f"Attempting to read frame {frame_idx} of {total_frames} from {os.path.basename(video_path)}")
-            
-            video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            depth_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            
-            ret_v, video_frame = video_cap.read()
-            ret_d, depth_frame = depth_cap.read()
-            
-            video_cap.release()
-            depth_cap.release()
+
+            # CRITICAL FIX: OpenCV seeking is unreliable for many codecs.
+            # Always use sequential reading for frame-accurate results.
+            # Seeking with CAP_PROP_POS_FRAMES often lands on nearest keyframe instead of exact frame.
+            logger.info(f"Reading frame {frame_idx} of {total_frames} from {os.path.basename(video_path)} (sequential read for accuracy)")
+
+            # Open and read sequentially (most reliable method)
+            video_cap = cv2.VideoCapture(video_path)
+            depth_cap = cv2.VideoCapture(depth_path)
+
+            if not video_cap.isOpened() or not depth_cap.isOpened():
+                logger.error(f"Failed to open video/depth files")
+                return None, total_frames
+
+            # Read frames sequentially to exact frame index
+            ret_v, ret_d = False, False
+            for i in range(frame_idx + 1):
+                ret_v, video_frame = video_cap.read()
+                ret_d, depth_frame = depth_cap.read()
+                if not ret_v or not ret_d:
+                    logger.error(f"Failed at frame {i} during sequential read")
+                    break
             
             if not ret_v:
-                logger.error(f"Failed to read video frame {frame_idx} from {os.path.basename(video_path)}")
+                logger.error(f"Failed to read video frame {frame_idx} from {os.path.basename(video_path)}. Video codec may not support seeking. Try converting to a more seekable format (e.g., H.264 MP4).")
+                logger.error(f"Video properties: {total_frames_video} frames, path={video_path}")
+                video_cap.release()
+                depth_cap.release()
                 return None, total_frames
-            
+
             if not ret_d:
-                logger.error(f"Failed to read depth frame {frame_idx} from {os.path.basename(depth_path)}")
+                logger.error(f"Failed to read depth frame {frame_idx} from {os.path.basename(depth_path)}. Depth map codec may not support seeking.")
+                logger.error(f"Depth properties: {total_frames_depth} frames, path={depth_path}")
+                video_cap.release()
+                depth_cap.release()
                 return None, total_frames
-            
+
+            # Release captures after successful read
+            video_cap.release()
+            depth_cap.release()
+
             # Convert video frame to RGB
             video_frame_rgb = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
             
@@ -2959,21 +3151,54 @@ class SplatterWebUI:
                 return None
             
             # Calculate frame index from position
-            total_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_frames_video = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_frames_depth = int(depth_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            if total_frames_video == 0 or total_frames_depth == 0:
+                logger.error(f"Video or depth map has 0 frames: {video_path} or {depth_path}")
+                return None
+            
+            # Use the minimum of both to avoid frame mismatch issues
+            total_frames = min(total_frames_video, total_frames_depth)
+            
+            if total_frames_video != total_frames_depth:
+                logger.warning(f"Frame count mismatch: Video has {total_frames_video} frames, Depth has {total_frames_depth} frames. Using minimum: {total_frames}")
+            
             frame_idx = int((frame_position / 100.0) * (total_frames - 1))
             frame_idx = max(0, min(frame_idx, total_frames - 1))
-            
+
+            # Try seeking first
             video_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             depth_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            
+
             ret_v, video_frame = video_cap.read()
             ret_d, depth_frame = depth_cap.read()
-            
+
+            # If seeking failed, try sequential read
+            if not ret_v or not ret_d:
+                logger.info(f"Seek failed at position {frame_position}%, trying sequential read...")
+                video_cap.release()
+                depth_cap.release()
+                
+                video_cap = cv2.VideoCapture(video_path)
+                depth_cap = cv2.VideoCapture(depth_path)
+                
+                if not video_cap.isOpened() or not depth_cap.isOpened():
+                    logger.error(f"Failed to reopen for sequential read")
+                    return None
+                
+                for i in range(frame_idx + 1):
+                    ret_v, video_frame = video_cap.read()
+                    ret_d, depth_frame = depth_cap.read()
+                    if not ret_v or not ret_d:
+                        logger.error(f"Failed at frame {i} during sequential read")
+                        break
+
             video_cap.release()
             depth_cap.release()
-            
+
             if not ret_v or not ret_d:
-                logger.error("Failed to read frames")
+                logger.error(f"Failed to read frames at position {frame_position}% (frame {frame_idx}). Video codec may not support seeking.")
                 return None
             
             # Convert video frame to RGB
@@ -3077,20 +3302,53 @@ class SplatterWebUI:
                 return None
             
             # Get middle frame
-            total_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            middle_frame_idx = total_frames // 2
+            total_frames_video = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_frames_depth = int(depth_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
+            if total_frames_video == 0 or total_frames_depth == 0:
+                logger.error(f"Video or depth map has 0 frames: {video_path} or {depth_path}")
+                return None
+            
+            # Use the minimum of both to avoid frame mismatch issues
+            total_frames = min(total_frames_video, total_frames_depth)
+            
+            if total_frames_video != total_frames_depth:
+                logger.warning(f"Frame count mismatch: Video has {total_frames_video} frames, Depth has {total_frames_depth} frames. Using minimum: {total_frames}")
+            
+            middle_frame_idx = total_frames // 2
+
+            # Try seeking first
             video_cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
             depth_cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
-            
+
             ret_v, video_frame = video_cap.read()
             ret_d, depth_frame = depth_cap.read()
-            
+
+            # If seeking failed, try sequential read
+            if not ret_v or not ret_d:
+                logger.info(f"Seek failed for middle frame {middle_frame_idx}, trying sequential read...")
+                video_cap.release()
+                depth_cap.release()
+                
+                video_cap = cv2.VideoCapture(video_path)
+                depth_cap = cv2.VideoCapture(depth_path)
+                
+                if not video_cap.isOpened() or not depth_cap.isOpened():
+                    logger.error(f"Failed to reopen for sequential read")
+                    return None
+                
+                for i in range(middle_frame_idx + 1):
+                    ret_v, video_frame = video_cap.read()
+                    ret_d, depth_frame = depth_cap.read()
+                    if not ret_v or not ret_d:
+                        logger.error(f"Failed at frame {i} during sequential read")
+                        break
+
             video_cap.release()
             depth_cap.release()
-            
+
             if not ret_v or not ret_d:
-                logger.error("Failed to read frames")
+                logger.error(f"Failed to read middle frame ({middle_frame_idx}). Video codec may not support seeking.")
                 return None
             
             # Convert video frame to RGB
@@ -3267,7 +3525,7 @@ class SplatterWebUI:
         with open(config_filename, "w") as f:
             json.dump(config, f, indent=4)
 
-    def start_processing(self, 
+    def start_processing(self,
                          input_source_clips, input_depth_maps, output_splatted,
                          max_disp, process_length, enable_full_res, batch_size,
                          enable_low_res, pre_res_width, pre_res_height, low_res_batch_size,
@@ -3278,10 +3536,11 @@ class SplatterWebUI:
                          move_to_finished, process_from, process_to,
                          # New parameters
                          output_crf_low, depth_dilate_left, depth_blur_left, depth_blur_left_mix,
-                         border_width, border_bias, border_mode, color_tags_mode):
-        """Starts the video processing in a separate thread."""
+                         border_width, border_bias, border_mode, color_tags_mode,
+                         progress=gr.Progress()):
+        """Starts the video processing with progress tracking."""
         self.stop_event.clear()
-        
+
         # Convert types from Gradio inputs (they may come as strings)
         try:
             max_disp = float(max_disp)
@@ -3498,7 +3757,7 @@ class SplatterWebUI:
         self.dual_output = dual_output
         self.zero_disparity_anchor = zero_disparity_anchor
         self.enable_global_norm = enable_global_norm
-        self.output_crf = output_crf
+        self.output_crf = output_crf_full  # Use output_crf_full as the main output_crf
         self.output_crf_full = output_crf_full
         self.output_crf_low = output_crf_low
         self.depth_gamma = depth_gamma
@@ -3608,7 +3867,11 @@ class SplatterWebUI:
 
         self.processing_thread = threading.Thread(target=self._run_batch_process, args=(settings,))
         self.processing_thread.start()
-        return "Single processing started...", 50, gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
+        
+        # Note: Thread runs in background. Check console logs for completion status.
+        # The UI will show "started" immediately, but processing continues in background.
+        # Watch for "✅ Batch processing completed" in console to know when it's done.
+        return "Processing started - check console for completion status", 50, gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
 
     def stop_processing(self):
         """Sets the stop event to gracefully halt processing."""
@@ -3703,27 +3966,27 @@ class SplatterWebUI:
                         
                         with gr.Row():
                             self.enable_low_res_comp = gr.Checkbox(
-                                label="Enable Low Res", 
+                                label="Enable Low Res",
                                 value=self.enable_low_res,
                                 info="When checked, will generate a splatted video of specified resolution. Use this for inpainting."
                             )
                             self.low_res_batch_size_comp = gr.Number(
-                                label="Batch Size", 
-                                value=self.low_res_batch_size, 
+                                label="Batch Size",
+                                value=self.low_res_batch_size,
                                 precision=0,
                                 info="The number of frames to process simultaneously when generating the low-resolution output. Can often be higher than the full-resolution batch size due to lower memory requirements. Too high a value will bog down ffmpeg encode."
                             )
-                        
+
                         with gr.Row():
                             self.pre_res_width_comp = gr.Number(
-                                label="Width", 
-                                value=self.pre_res_width, 
+                                label="Width",
+                                value=self.pre_res_width,
                                 precision=0,
                                 info="The target width for the low-resolution output. The input video and depth maps will be resized to this width for the low-resolution pass."
                             )
                             self.pre_res_height_comp = gr.Number(
-                                label="Height", 
-                                value=self.pre_res_height, 
+                                label="Height",
+                                value=self.pre_res_height,
                                 precision=0,
                                 info="The target height for the low-resolution output. The input video and depth maps will be resized to this height for the low-resolution pass."
                             )
@@ -3946,7 +4209,7 @@ class SplatterWebUI:
                         self.preview_disparity_slider = gr.Slider(
                             minimum=0.0,
                             maximum=200.0,
-                            value=50.0,
+                            value=20.0,  # Changed from 50.0 to match default MAX_DISP
                             step=1.0,
                             label="Disparity",
                             scale=2
@@ -3981,6 +4244,17 @@ class SplatterWebUI:
                 fn=self.refresh_video_list,
                 inputs=[],
                 outputs=[self.preview_video_selector, self.status_label]
+            ).then(
+                fn=self.auto_detect_low_res_from_input,
+                inputs=[self.input_source_clips_comp],
+                outputs=[self.pre_res_width_comp, self.pre_res_height_comp, self.status_label]
+            )
+            
+            # Auto-detect low-res on page load (if folder already set)
+            interface.load(
+                fn=self.auto_detect_low_res_from_input,
+                inputs=[self.input_source_clips_comp],
+                outputs=[self.pre_res_width_comp, self.pre_res_height_comp, self.status_label]
             )
             
             self.depth_map_subfolders_comp.change(
@@ -3988,7 +4262,7 @@ class SplatterWebUI:
                 inputs=[self.depth_map_subfolders_comp],
                 outputs=[]
             )
-            
+
             self.auto_convergence_comp.change(
                 fn=self.on_auto_convergence_mode_select,
                 inputs=[self.auto_convergence_comp],
@@ -4031,11 +4305,9 @@ class SplatterWebUI:
                     self.border_width_comp, self.border_bias_comp, self.border_mode_comp, self.color_tags_mode_comp
                 ],
                 outputs=[self.status_label, self.progress_bar, self.start_button, self.start_single_button, self.stop_button]
-            ).then(
-                fn=lambda: (gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)),
-                inputs=[],
-                outputs=[self.start_button, self.start_single_button, self.stop_button]
             )
+            # Note: Removed .then() handler - buttons stay disabled during background processing
+            # User should watch console for "✅ Batch processing completed" message
             
             self.stop_button.click(
                 fn=self.stop_processing,
@@ -4121,13 +4393,91 @@ class SplatterWebUI:
 
         return interface
 
+    def auto_detect_low_res_from_input(self, source_folder):
+        """
+        Auto-detect input video resolution and set appropriate low-res settings.
+        
+        Scaling logic:
+        - 4K (3840×2160) → Low-res: 1920×1080 (1080p)
+        - 1440p (2560×1440) → Low-res: 1280×720 (720p)
+        - 1080p (1920×1080) → Low-res: 1280×720 (720p)
+        - 720p (1280×720) → Low-res: 960×540 (540p)
+        """
+        if not source_folder or not os.path.isdir(source_folder):
+            return gr.update(), gr.update(), "⚠️ Invalid source folder"
+
+        try:
+            # Find first video file
+            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv']
+            video_file = None
+
+            for item in os.listdir(source_folder):
+                item_lower = item.lower()
+                if any(item_lower.endswith(ext) for ext in video_extensions):
+                    video_file = os.path.join(source_folder, item)
+                    break
+
+            if not video_file:
+                return gr.update(), gr.update(), "⚠️ No video files found in source folder"
+
+            # Detect resolution using OpenCV
+            cap = cv2.VideoCapture(video_file)
+            if not cap.isOpened():
+                return gr.update(), gr.update(), f"❌ Failed to read: {os.path.basename(video_file)}"
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            if width <= 0 or height <= 0:
+                return gr.update(), gr.update(), "❌ Invalid resolution detected"
+
+            # Determine low-res settings based on input resolution
+            if width >= 3840 and height >= 2160:
+                # 4K input → 1080p low-res
+                low_res_width = 1920
+                low_res_height = 1080
+                resolution_name = "4K"
+            elif width >= 2560 and height >= 1440:
+                # 1440p input → 720p low-res
+                low_res_width = 1280
+                low_res_height = 720
+                resolution_name = "1440p"
+            elif width >= 1920 and height >= 1080:
+                # 1080p input → 720p low-res
+                low_res_width = 1280
+                low_res_height = 720
+                resolution_name = "1080p"
+            elif width >= 1280 and height >= 720:
+                # 720p input → 540p low-res
+                low_res_width = 960
+                low_res_height = 540
+                resolution_name = "720p"
+            else:
+                # Unknown/SD input → use 2/3 of original
+                low_res_width = max(640, (width * 2) // 3)
+                low_res_height = max(360, (height * 2) // 3)
+                resolution_name = f"{width}×{height}"
+
+            # Ensure dimensions are even (required by codecs)
+            if low_res_width % 2 != 0:
+                low_res_width += 1
+            if low_res_height % 2 != 0:
+                low_res_height += 1
+
+            logger.info(f"Auto-detected {resolution_name} input ({width}x{height}) → Setting low-res to {low_res_width}x{low_res_height}")
+            return low_res_width, low_res_height, f"✅ {resolution_name} detected → Low-res: {low_res_width}×{low_res_height}"
+
+        except Exception as e:
+            logger.error(f"Error auto-detecting resolution: {e}")
+            return gr.update(), gr.update(), f"❌ Error: {str(e)}"
 
 
 def compute_global_depth_stats(
-        depth_map_reader,
-        total_frames,
-        chunk_size = 100
-    ):
+    depth_map_reader,
+    total_frames,
+    chunk_size = 100
+):
     """
     Computes the global min and max depth values from a depth video by reading it in chunks.
     Assumes raw pixel values that need to be scaled (e.g., from 0-255 or 0-1023 range).
@@ -4139,9 +4489,9 @@ def compute_global_depth_stats(
         current_indices = list(range(i, min(i + chunk_size, total_frames)))
         if not current_indices:
             break
-        
+
         chunk_numpy_raw = depth_map_reader.get_batch(current_indices).asnumpy()
-        
+
         # Handle RGB vs Grayscale depth maps
         if chunk_numpy_raw.ndim == 4:
             if chunk_numpy_raw.shape[-1] == 3: # RGB
@@ -4150,15 +4500,15 @@ def compute_global_depth_stats(
                 chunk_numpy = chunk_numpy_raw.squeeze(-1)
         else:
             chunk_numpy = chunk_numpy_raw
-        
+
         chunk_min = chunk_numpy.min()
         chunk_max = chunk_numpy.max()
-        
+
         if chunk_min < global_min:
             global_min = chunk_min
         if chunk_max > global_max:
             global_max = chunk_max
-        
+
         # draw_progress_bar(i + len(current_indices), total_frames, prefix="  Depth Stats:", suffix="Complete")
 
     logger.info(f"==> Global depth stats computed: min_raw={global_min:.3f}, max_raw={global_max:.3f}")

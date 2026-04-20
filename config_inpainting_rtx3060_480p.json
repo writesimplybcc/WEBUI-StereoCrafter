@@ -1,0 +1,65 @@
+{
+    "_comment": "Optimal Inpainting Settings for RTX 3060 (12GB) with 854x480 video",
+    "_version": "2026-03-11",
+    "_gpu_target": "RTX 3060 12GB",
+    "_resolution": "854x480 (480p)",
+    "_estimated_vram_usage": "7-9 GB",
+    
+    "input_folder": "./output_splatted",
+    "output_folder": "./completed_output",
+    "hires_blend_folder": "./output_splatted_hires",
+    
+    "num_inference_steps": 6,
+    "decode_chunk_size": 6,
+    "tile_num": 1,
+    "frames_chunk": 14,
+    "frame_overlap": 3,
+    "original_input_blend_strength": 0.0,
+    "output_crf": 18,
+    "process_length": -1,
+    "offload_type": "model",
+    
+    "mask_initial_threshold": 0.3,
+    "mask_morph_kernel_size": 0.0,
+    "mask_dilate_kernel_size": 5.0,
+    "mask_blur_kernel_size": 10.0,
+    
+    "enable_post_inpainting_blend": false,
+    "enable_color_transfer": true,
+    
+    "_usage_notes": {
+        "fast_testing": {
+            "num_inference_steps": 5,
+            "decode_chunk_size": 4,
+            "frames_chunk": 8,
+            "estimated_time_per_100_frames": "3-5 minutes"
+        },
+        "balanced_recommended": {
+            "num_inference_steps": 6,
+            "decode_chunk_size": 6,
+            "frames_chunk": 14,
+            "estimated_time_per_100_frames": "5-8 minutes"
+        },
+        "maximum_quality": {
+            "num_inference_steps": 10,
+            "decode_chunk_size": 6,
+            "frames_chunk": 12,
+            "frame_overlap": 5,
+            "estimated_time_per_100_frames": "10-15 minutes"
+        }
+    },
+    
+    "_troubleshooting": {
+        "if_oom_error": [
+            "Reduce frames_chunk: 14 → 12 → 8",
+            "Reduce decode_chunk_size: 6 → 4 → 2",
+            "Increase tile_num: 1 → 2 (adds overhead but saves VRAM)",
+            "Reduce resolution for very long videos"
+        ],
+        "if_vram_headroom": [
+            "Increase decode_chunk_size: 6 → 8 → 10 (biggest speed gain)",
+            "Increase frames_chunk: 14 → 18 → 23",
+            "Increase inference_steps: 6 → 8 → 10 (quality improvement)"
+        ]
+    }
+}

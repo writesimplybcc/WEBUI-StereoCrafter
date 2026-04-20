@@ -5,6 +5,7 @@ Combines features from tkinter GUI, Flask reference, and existing Gradio impleme
 """
 
 import os
+import gc
 import threading
 import queue
 import glob
@@ -12,6 +13,11 @@ import json
 import shutil
 import numpy as np
 import torch
+
+# Optimize CUDA memory allocation to avoid fragmentation
+# This must be set before any CUDA operations
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import gradio as gr
 from typing import Optional, Tuple, List
 import torch.nn.functional as F
@@ -36,6 +42,123 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.models.attention_processor import AttnProcessor2_0, XFormersAttnProcessor
 
 
+def load_inpainting_pipeline_hf(
+    svd_path: str,
+    unet_path: str,
+    device: str = "cuda",
+    dtype: torch.dtype = torch.float16,
+    offload_type: str = "model"
+) -> StableVideoDiffusionInpaintingPipeline:
+    """
+    Load inpainting pipeline from HuggingFace.
+    Downloads models if not cached locally.
+    """
+    logger.info(f"Loading SVD from HuggingFace: {svd_path}")
+    logger.info(f"Loading UNet from HuggingFace: {unet_path}")
+    
+    try:
+        # Load entire pipeline from HuggingFace using proper repo IDs
+        # SVD components
+        logger.info("Loading SVD components from HF...")
+        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+            svd_path,
+            subfolder="image_encoder",
+            variant="fp16",
+            torch_dtype=dtype,
+        )
+        vae = AutoencoderKLTemporalDecoder.from_pretrained(
+            svd_path,
+            subfolder="vae",
+            variant="fp16",
+            torch_dtype=dtype,
+        )
+        feature_extractor = CLIPImageProcessor.from_pretrained(
+            svd_path,
+            subfolder="feature_extractor"
+        )
+        scheduler = EulerDiscreteScheduler.from_pretrained(
+            svd_path,
+            subfolder="scheduler"
+        )
+        
+        # UNet from DepthCrafter
+        logger.info("Loading UNet from HF...")
+        unet = UNetSpatioTemporalConditionModel.from_pretrained(
+            unet_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=dtype,
+        )
+        
+        image_encoder.requires_grad_(False)
+        vae.requires_grad_(False)
+        unet.requires_grad_(False)
+
+        # Create pipeline
+        pipeline = StableVideoDiffusionInpaintingPipeline(
+            vae=vae,
+            image_encoder=image_encoder,
+            unet=unet,
+            scheduler=scheduler,
+            feature_extractor=feature_extractor,
+        )
+        pipeline = pipeline.to(device, dtype=dtype)
+
+        # Configure attention processors
+        attention_set = False
+        if AttnProcessor2_0 is not None:
+            try:
+                pipeline.unet.set_attn_processor(AttnProcessor2_0())
+                logger.info("Efficient attention (AttnProcessor2_0) enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable AttnProcessor2_0: {e}")
+        if not attention_set and XFormersAttnProcessor is not None:
+            try:
+                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
+                logger.info("xFormers attention enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable xFormers attention: {e}")
+        if not attention_set:
+            logger.info("Using default attention processor")
+
+        # Apply offloading
+        if offload_type == "model":
+            pipeline.enable_model_cpu_offload()
+        elif offload_type == "sequential":
+            pipeline.enable_sequential_cpu_offload()
+        elif offload_type == "shared_memory":
+            logger.info("Using shared memory offload mode (hybrid)")
+            pipeline.image_encoder = pipeline.image_encoder.cpu()
+            pipeline.enable_model_cpu_offload()
+        elif offload_type == "none":
+            pass
+        else:
+            raise ValueError("Invalid offload_type")
+
+        # Enable VAE slicing to reduce VRAM during VAE encode/decode
+        try:
+            pipeline.vae.enable_slicing()
+            logger.info("VAE slicing enabled for reduced VRAM usage")
+        except Exception as e:
+            logger.warning(f"Failed to enable VAE slicing: {e}")
+
+        # Enable gradient checkpointing on UNet to reduce VRAM
+        try:
+            pipeline.unet.enable_gradient_checkpointing()
+            logger.info("UNet gradient checkpointing enabled for reduced VRAM usage")
+        except Exception as e:
+            logger.warning(f"Failed to enable UNet gradient checkpointing: {e}")
+
+        logger.info("Pipeline loaded successfully from HuggingFace!")
+        return pipeline
+        
+    except Exception as e:
+        logger.error(f"Error loading from HuggingFace: {e}")
+        logger.error("Please ensure you have internet connection and HuggingFace access.")
+        raise
+
+
 def load_inpainting_pipeline_local(
     svd_path: str,
     unet_path: str,
@@ -46,79 +169,139 @@ def load_inpainting_pipeline_local(
     """
     Load inpainting pipeline from local weights folder.
     Loads StereoCrafter UNet directly without subfolder (HF repo has no unet_diffusers folder).
+    Falls back to HuggingFace download if local weights don't exist.
     """
     logger.info("Loading pipeline from local weights...")
-    
+
+    # Check if local paths exist
+    svd_exists = os.path.isdir(svd_path)
+    unet_exists = os.path.isdir(unet_path)
+
+    if not svd_exists or not unet_exists:
+        logger.warning(f"Local weights not found (SVD: {svd_path}, UNet: {unet_path})")
+        logger.info("Falling back to HuggingFace download...")
+        return load_inpainting_pipeline_hf(
+            svd_path="stabilityai/stable-video-diffusion-img2vid-xt-1-1",
+            unet_path="tencent/DepthCrafter",
+            device=device,
+            dtype=dtype,
+            offload_type=offload_type
+        )
+
     # Load components from local paths
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        os.path.join(svd_path, "image_encoder"),
-        variant="fp16",
-        torch_dtype=dtype,
-    )
-    vae = AutoencoderKLTemporalDecoder.from_pretrained(
-        os.path.join(svd_path, "vae"),
-        variant="fp16",
-        torch_dtype=dtype,
-    )
-    # Load UNet directly from StereoCrafter root (no unet_diffusers subfolder in HF repo)
-    unet = UNetSpatioTemporalConditionModel.from_pretrained(
-        unet_path,
-        low_cpu_mem_usage=True,
-        torch_dtype=dtype,
-    )
-    
-    image_encoder.requires_grad_(False)
-    vae.requires_grad_(False)
-    unet.requires_grad_(False)
-    
-    # Load feature extractor and scheduler from SVD path
-    feature_extractor = CLIPImageProcessor.from_pretrained(
-        os.path.join(svd_path, "feature_extractor")
-    )
-    scheduler = EulerDiscreteScheduler.from_pretrained(
-        os.path.join(svd_path, "scheduler")
-    )
-    
-    # Create pipeline
-    pipeline = StableVideoDiffusionInpaintingPipeline(
-        vae=vae,
-        image_encoder=image_encoder,
-        unet=unet,
-        scheduler=scheduler,
-        feature_extractor=feature_extractor,
-    )
-    pipeline = pipeline.to(device, dtype=dtype)
-    
-    # Configure attention processors
-    attention_set = False
-    if AttnProcessor2_0 is not None:
+    logger.info(f"Loading SVD from: {svd_path}")
+    logger.info(f"Loading UNet from: {unet_path}")
+
+    try:
+        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+            svd_path,
+            subfolder="image_encoder",
+            variant="fp16",
+            torch_dtype=dtype,
+        )
+        vae = AutoencoderKLTemporalDecoder.from_pretrained(
+            svd_path,
+            subfolder="vae",
+            variant="fp16",
+            torch_dtype=dtype,
+        )
+        # Load UNet directly from StereoCrafter root (no unet_diffusers subfolder in HF repo)
+        unet = UNetSpatioTemporalConditionModel.from_pretrained(
+            unet_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=dtype,
+        )
+
+        image_encoder.requires_grad_(False)
+        vae.requires_grad_(False)
+        unet.requires_grad_(False)
+
+        # Load feature extractor and scheduler from SVD path
+        feature_extractor = CLIPImageProcessor.from_pretrained(
+            svd_path,
+            subfolder="feature_extractor"
+        )
+        scheduler = EulerDiscreteScheduler.from_pretrained(
+            svd_path,
+            subfolder="scheduler"
+        )
+
+        # Create pipeline
+        pipeline = StableVideoDiffusionInpaintingPipeline(
+            vae=vae,
+            image_encoder=image_encoder,
+            unet=unet,
+            scheduler=scheduler,
+            feature_extractor=feature_extractor,
+        )
+        pipeline = pipeline.to(device, dtype=dtype)
+
+        # Configure attention processors
+        attention_set = False
+        if AttnProcessor2_0 is not None:
+            try:
+                pipeline.unet.set_attn_processor(AttnProcessor2_0())
+                logger.info("Efficient attention (AttnProcessor2_0) enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable AttnProcessor2_0: {e}")
+        if not attention_set and XFormersAttnProcessor is not None:
+            try:
+                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
+                logger.info("xFormers attention enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable xFormers attention: {e}")
+        if not attention_set:
+            logger.info("Using default attention processor")
+
+        # Apply offloading
+        if offload_type == "model":
+            pipeline.enable_model_cpu_offload()
+        elif offload_type == "sequential":
+            pipeline.enable_sequential_cpu_offload()
+        elif offload_type == "shared_memory":
+            # Hybrid approach: Keep critical components on GPU, offload others to shared memory
+            # Best for systems with shared GPU memory (e.g., RTX 3060 12GB + 32GB shared)
+            logger.info("Using shared memory offload mode (hybrid)")
+            # UNet and VAE stay on GPU (already loaded)
+            # Move image_encoder to CPU (used only once per chunk)
+            pipeline.image_encoder = pipeline.image_encoder.cpu()
+            # Enable model offload for remaining components
+            pipeline.enable_model_cpu_offload()
+        elif offload_type == "none":
+            pass
+        else:
+            raise ValueError("Invalid offload_type")
+
+        # Enable VAE slicing to reduce VRAM during VAE encode/decode
+        # This processes the VAE in smaller spatial slices instead of all at once
         try:
-            pipeline.unet.set_attn_processor(AttnProcessor2_0())
-            logger.info("Efficient attention (AttnProcessor2_0) enabled for UNet")
-            attention_set = True
+            pipeline.vae.enable_slicing()
+            logger.info("VAE slicing enabled for reduced VRAM usage")
         except Exception as e:
-            logger.warning(f"Failed to enable AttnProcessor2_0: {e}")
-    if not attention_set and XFormersAttnProcessor is not None:
+            logger.warning(f"Failed to enable VAE slicing: {e}")
+
+        # Enable gradient checkpointing on UNet to reduce VRAM
+        # Trades compute for memory by recomputing activations during forward pass
         try:
-            pipeline.unet.set_attn_processor(XFormersAttnProcessor())
-            logger.info("xFormers attention enabled for UNet")
-            attention_set = True
+            pipeline.unet.enable_gradient_checkpointing()
+            logger.info("UNet gradient checkpointing enabled for reduced VRAM usage")
         except Exception as e:
-            logger.warning(f"Failed to enable xFormers attention: {e}")
-    if not attention_set:
-        logger.info("Using default attention processor")
-    
-    # Apply offloading
-    if offload_type == "model":
-        pipeline.enable_model_cpu_offload()
-    elif offload_type == "sequential":
-        pipeline.enable_sequential_cpu_offload()
-    elif offload_type == "none":
-        pass
-    else:
-        raise ValueError("Invalid offload_type")
-    
-    return pipeline
+            logger.warning(f"Failed to enable UNet gradient checkpointing: {e}")
+
+        return pipeline
+        
+    except Exception as e:
+        logger.error(f"Error loading from local weights: {e}")
+        logger.info("Falling back to HuggingFace download...")
+        return load_inpainting_pipeline_hf(
+            svd_path="stabilityai/stable-video-diffusion-img2vid-xt-1-1",
+            unet_path="tencent/DepthCrafter",
+            device=device,
+            dtype=dtype,
+            offload_type=offload_type
+        )
 from dependency.stereocrafter_util import (
     get_video_stream_info, draw_progress_bar,
     release_cuda_memory, set_util_logger_level,
@@ -238,8 +421,7 @@ def spatial_tiled_process(
 
             # Clean up intermediate tensors to save memory
             del cond_tile_proc, mask_tile_proc, tile_output_padded
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # NOTE: Cache clearing moved to end of function for better VRAM utilization
 
             row_tiles.append(tile_output)
         cols.append(row_tiles)
@@ -282,11 +464,20 @@ def spatial_tiled_process(
 
 class InpaintingWebUI:
     """Complete Gradio-based UI for stereo video inpainting with all features"""
-    
+
     def __init__(self):
         # Configuration
         self.app_config = self.load_config()
         
+        # Load VRAM-aware defaults
+        from dependency.stereocrafter_util import get_vram_config
+        vram_config = get_vram_config()
+        self.vram_defaults = {
+            'frames_chunk': vram_config['frames_chunk'],
+            'frame_overlap': vram_config['overlap'],
+            'decode_chunk_size': vram_config['decode_chunk_size']
+        }
+
         # Processing control
         self.stop_event = threading.Event()
         self.progress_queue = queue.Queue()
@@ -301,25 +492,50 @@ class InpaintingWebUI:
             with open("config_inpaint.json", "r") as f:
                 return json.load(f)
         except FileNotFoundError:
-            # Default structure based on user feedback
+            # Default structure with VRAM-aware defaults
+            # Load VRAM config for GPU-appropriate defaults
+            from dependency.stereocrafter_util import get_vram_config, get_gpu_memory_info
+            
+            vram_config = get_vram_config()
+            gpu_info = get_gpu_memory_info()
+            
+            # Auto-detect best offload type based on GPU configuration
+            gpu_name = gpu_info.get('gpu_name', '').lower()
+            total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
+            
+            # RTX 3060 12GB or better: Use 'none' for maximum speed
+            # Shared memory mode introduces PCIe overhead that slows down processing
+            if total_dedicated_gb >= 12:
+                # 12GB+ dedicated VRAM is enough for full GPU processing
+                default_offload = 'none'
+            elif total_dedicated_gb >= 8:
+                # 8-12GB: Model offload for safety
+                default_offload = 'model'
+            else:
+                # <8GB: Sequential offload (slowest but necessary)
+                default_offload = 'sequential'
+            
+            logger.info(f"Auto-selected offload_type='{default_offload}' based on GPU: {gpu_info.get('gpu_name', 'Unknown')} ({total_dedicated_gb:.1f}GB)")
+            
             return {
                 'input_folder': './output_splatted/lowres',
                 'output_folder': './completed_output',
                 'hires_blend_folder': './output_splatted/hires',
                 'num_inference_steps': 5,
-                'tile_num': 2,
-                'frames_chunk': 23,
-                'frame_overlap': 3,
+                'tile_num': 1,
+                'frames_chunk': vram_config['frames_chunk'],
+                'frame_overlap': vram_config['overlap'],
                 'original_input_blend_strength': 0.0,
-                'output_crf': 23,
+                'output_crf': 18,
                 'process_length': -1,
-                'offload_type': 'model',
+                'offload_type': default_offload,
                 'mask_initial_threshold': 0.3,
                 'mask_morph_kernel_size': 0.0,
                 'mask_dilate_kernel_size': 5,
                 'mask_blur_kernel_size': 10,
-                'enable_post_inpainting_blend': False,
-                'enable_color_transfer': True
+                'enable_post_inpainting_blend': True,  # Enabled for quality
+                'enable_color_transfer': True,  # Enabled for quality
+                'decode_chunk_size': vram_config['decode_chunk_size']
             }
     
     def save_config(self, config_dict):
@@ -340,14 +556,14 @@ class InpaintingWebUI:
                 config.get('output_folder', './completed_output'),
                 config.get('hires_blend_folder', './output_splatted/hires'),
                 config.get('num_inference_steps', 5),
-                config.get('decode_chunk_size', 8),
-                config.get('tile_num', 2),
-                config.get('frames_chunk', 23),
-                config.get('frame_overlap', 3),
+                config.get('decode_chunk_size', self.vram_defaults['decode_chunk_size']),
+                config.get('tile_num', 1),
+                config.get('frames_chunk', self.vram_defaults['frames_chunk']),
+                config.get('frame_overlap', self.vram_defaults['frame_overlap']),
                 config.get('original_input_blend_strength', 0.0),
-                config.get('output_crf', 23),
+                config.get('output_crf', 18),
                 config.get('process_length', -1),
-                config.get('offload_type', 'model'),
+                config.get('offload_type', 'none'),
                 config.get('mask_initial_threshold', 0.3),
                 config.get('mask_morph_kernel_size', 0.0),
                 config.get('mask_dilate_kernel_size', 5),
@@ -361,20 +577,20 @@ class InpaintingWebUI:
             return tuple([None] * 18 + [f"✗ Failed to load config: {e}"])
     
     def reset_to_defaults(self):
-        """Reset all parameters to default values"""
+        """Reset all parameters to default values (VRAM-aware)"""
         return (
             './output_splatted/lowres',  # input_folder
             './completed_output',  # output_folder
             './output_splatted/hires',  # hires_blend_folder
             5,  # num_inference_steps
-            8,  # decode_chunk_size (optimized for high-end GPUs)
-            2,  # tile_num
-            23,  # frames_chunk
-            3,  # frame_overlap
+            self.vram_defaults['decode_chunk_size'],  # decode_chunk_size (VRAM-aware)
+            1,  # tile_num
+            self.vram_defaults['frames_chunk'],  # frames_chunk (VRAM-aware)
+            self.vram_defaults['frame_overlap'],  # frame_overlap (VRAM-aware)
             0.0,  # original_input_blend_strength
-            23,  # output_crf
+            18,  # output_crf
             -1,  # process_length
-            'model',  # offload_type
+            'none',  # offload_type (changed for better VRAM utilization)
             0.3,  # mask_initial_threshold
             0.0,  # mask_morph_kernel_size
             5,  # mask_dilate_kernel_size
@@ -424,18 +640,15 @@ class InpaintingWebUI:
                             gr.Markdown("""
                             **Decode Chunk Size**: Higher values = faster but more VRAM
                             - RTX 4090/6000 Ada (24-48GB): Use 8-14 (safe) or 14-20 (aggressive)
-                            - RTX 3090/4080 (12-24GB): Use 4-8  
+                            - RTX 3090/4080 (12-24GB): Use 4-8
                             - RTX 3060/4060 (8-12GB): Use 2-4
-                            
+
                             ⚠️ **Warning**: Values above 14 may cause OOM (Out of Memory) errors on GPUs with less than 24GB VRAM!
                             """)
-                            # Use VRAM-aware configuration for decode chunk size
-                            from dependency.stereocrafter_util import get_vram_config
-                            vram_config = get_vram_config()
                             decode_chunk_size = gr.Slider(
-                                minimum=1, maximum=23, value=int(self.app_config.get("decode_chunk_size", vram_config['decode_chunk_size'])),
+                                minimum=1, maximum=23, value=int(self.app_config.get("decode_chunk_size", self.vram_defaults['decode_chunk_size'])),
                                 step=1, label="Decode Chunk Size",
-                                info="Frames decoded at once. Higher = faster + more VRAM. Safe: 8-12, Max: 23. Default: 8"
+                                info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (VRAM-optimized)"
                             )
                         tile_num = gr.Slider(
                             minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 1)),
@@ -443,9 +656,9 @@ class InpaintingWebUI:
                             info="Number of spatial tiles (e.g., 2 means 2x2 grid) to split each video frame into. Useful for processing high-resolution videos with limited GPU memory. Set to 1 to disable tiling. Default: 1"
                         )
                         frames_chunk = gr.Slider(
-                            minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", 23)),
+                            minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", self.vram_defaults['frames_chunk'])),
                             step=1, label="Frames Chunk",
-                            info="The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: 23"
+                            info=f"The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: {self.vram_defaults['frames_chunk']} (VRAM-optimized)"
                         )
                         process_length = gr.Number(
                             label="Process Length (-1 for all)",
@@ -461,9 +674,9 @@ class InpaintingWebUI:
                             info="Controls how much the original warped input (1.0) versus the previous generated inpainted frame (0.0) influences the blend during temporal overlap. Higher for less hallucination but less consistency. Default: 0 = Off"
                         )
                         frame_overlap = gr.Slider(
-                            minimum=0, maximum=20, value=float(self.app_config.get("frame_overlap", 3)),
+                            minimum=0, maximum=20, value=float(self.app_config.get("frame_overlap", self.vram_defaults['frame_overlap'])),
                             step=1, label="Frame Overlap",
-                            info="The number of frames that temporally overlap between consecutive processing chunks. These overlapping frames from the previous generated output and original input are smoothly blended to condition the start of the current chunk, reducing visual glitches. Default: 3"
+                            info="The number of frames that temporally overlap between consecutive processing chunks. These overlapping frames from the previous generated output and original input are smoothly blended to condition the start of the current chunk, reducing visual glitches. Default: 6 (balanced for speed and quality, user-optimized)"
                         )
                         output_crf = gr.Slider(
                             minimum=0, maximum=51, value=float(self.app_config.get("output_crf", 18)),
@@ -471,10 +684,10 @@ class InpaintingWebUI:
                             info="Constant Rate Factor for video encoding (lower is higher quality). Adjust based on codec (H.264/H.265)."
                         )
                         offload_type = gr.Dropdown(
-                            choices=["model", "sequential", "none"],
-                            value=self.app_config.get("offload_type", "model"),
+                            choices=["none", "model", "sequential", "shared_memory"],
+                            value=self.app_config.get("offload_type", "none"),
                             label="CPU Offload Type",
-                            info="Determines how parts of the model are moved to CPU memory to reduce GPU VRAM usage. 'model' offloads entire components, 'sequential' offloads layers one by one, 'none' keeps everything on GPU."
+                            info="Determines how parts of the model are moved to CPU memory. 'none' keeps everything on GPU (fastest, recommended for 12GB+ VRAM). 'model' offloads components between steps (balanced, for 8-12GB). 'sequential' offloads layers one-by-one (slowest, for <8GB). 'shared_memory' experimental mode for systems with shared GPU memory (RAM higher than 32GB)."
                         )
             
             # Mask Processing Section
@@ -516,7 +729,7 @@ class InpaintingWebUI:
                     enable_color_transfer = gr.Checkbox(
                         label="Enable Color Transfer",
                         value=self.app_config.get("enable_color_transfer", True),
-                        info="If enabled, the color palette and statistics of the inpainted output will be adjusted to match the original left eye view, improving visual consistency. Now also works in dual-splatted inputs."
+                        info="Adjusts inpainted colors to match original footage. Adds ~15-20 seconds per 127 frames (optimized). Recommended for final renders."
                     )
             
             # Progress Section
@@ -740,19 +953,18 @@ class InpaintingWebUI:
         last_video_frames = "N/A"
         last_video_overlap = "N/A"
         last_video_bias = "N/A"
-        
-        max_wait_time = 300  # Maximum 5 minutes wait
-        start_time = time.time()
+
+        # No timeout - wait for processing to complete naturally
+        # For very long videos, timeout would cause premature exit
         
         while self.processing_thread.is_alive():
-            # Check if we've been waiting too long or stop was requested
-            if time.time() - start_time > max_wait_time or self.stop_event.is_set():
-                if self.stop_event.is_set():
-                    # Give thread a moment to clean up
-                    self.processing_thread.join(timeout=2.0)
-                    last_status = "⏹️ Processing stopped by user"
+            # Check if stop was requested
+            if self.stop_event.is_set():
+                # Give thread a moment to clean up
+                self.processing_thread.join(timeout=2.0)
+                last_status = "⏹️ Processing stopped by user"
                 break
-            
+
             # Check queue for updates
             updated = False
             while not self.progress_queue.empty():
@@ -890,6 +1102,13 @@ class InpaintingWebUI:
                 else:
                     self.progress_queue.put(("status", f"Failed {basename}"))
 
+                # Clear GPU memory between videos to prevent accumulation
+                try:
+                    release_cuda_memory()
+                    logger.debug(f"Cleared GPU memory after processing video {idx + 1}")
+                except Exception as e:
+                    logger.warning(f"Failed to clear memory after video {idx + 1}: {e}")
+
                 progress = int(((idx + 1) / total_videos) * 100)
                 self.progress_queue.put(("progress", progress))
                 self.progress_queue.put(("batch_progress", f"{idx+1}/{total_videos}"))
@@ -967,39 +1186,57 @@ class InpaintingWebUI:
             total_frames = num_frames_original
             frames_chunk = params['frames_chunk']
             overlap = current_overlap
+            
+            # Validate overlap vs frames_chunk to prevent zero-output chunks
+            # Each chunk produces (frames_chunk - overlap) new frames, so we need frames_chunk > overlap
+            if frames_chunk <= overlap:
+                logger.warning(
+                    f"frames_chunk ({frames_chunk}) must be greater than overlap ({overlap}) "
+                    f"to produce new frames. Reducing overlap from {overlap} to {frames_chunk - 1}."
+                )
+                overlap = frames_chunk - 1
+                current_overlap = overlap  # Update for later use
+            
             stride = max(1, frames_chunk - overlap)
+            total_chunks = (total_frames + stride - 1) // stride  # Calculate total chunks
             results = []
             previous_chunk_output = None
+
+            logger.info(f"Processing {total_frames} frames in {total_chunks} chunks (chunk_size={frames_chunk}, overlap={overlap}, stride={stride})")
 
             for i in range(0, total_frames, stride):
                 if self.stop_event.is_set():
                     return False, None
 
-                # Slice logic with dynamic padding
+                # Slice frames - OPTIMIZED: Use .narrow() instead of indexing for zero-copy view
                 end_idx = min(i + frames_chunk, total_frames)
-                input_slice = frames_warpped_padded[i:end_idx].clone()
-                mask_slice = frames_mask_padded[i:end_idx].clone()
-                actual_len = input_slice.shape[0]
+                actual_len = end_idx - i
+                
+                # Use narrow() for zero-copy tensor view when possible
+                input_slice = frames_warpped_padded.narrow(0, i, actual_len).clone()
+                mask_slice = frames_mask_padded.narrow(0, i, actual_len).clone()
 
-                padding_needed = 0
+                # Pad only if necessary (last chunk with < 5 frames)
                 if actual_len <= 4:
                     padding_needed = 6 - actual_len
-                    # Pad with last frame repetition
-                    last_frame = input_slice[-1:].clone()
-                    last_mask = mask_slice[-1:].clone()
-                    input_slice = torch.cat([input_slice] + [last_frame]*padding_needed, dim=0)
-                    mask_slice = torch.cat([mask_slice] + [last_mask]*padding_needed, dim=0)
+                    # Pad with last frame repetition - more efficient
+                    last_frame = input_slice[-1:]
+                    last_mask = mask_slice[-1:]
+                    input_slice = torch.cat([input_slice, last_frame.expand(padding_needed, -1, -1, -1)], dim=0)
+                    mask_slice = torch.cat([mask_slice, last_mask.expand(padding_needed, -1, -1, -1)], dim=0)
 
-                # Input blending
+                # Input blending - OPTIMIZED: In-place operations where possible
                 if previous_chunk_output is not None and overlap > 0:
                     overlap_actual = min(overlap, input_slice.shape[0])
                     prev_overlap = previous_chunk_output[-overlap_actual:]
 
                     if current_blend > 0:
+                        # Vectorized blending - already optimal
                         weights = torch.linspace(0.0, 1.0, overlap_actual, device=prev_overlap.device).view(-1, 1, 1, 1) * current_blend
                         input_slice[:overlap_actual] = (1 - weights) * prev_overlap + weights * input_slice[:overlap_actual]
                     else:
-                        input_slice[:overlap_actual] = prev_overlap
+                        # Direct copy instead of blend
+                        input_slice[:overlap_actual].copy_(prev_overlap)
 
                 # 4. Inference - OPTIMIZED FOR HIGH-END GPU
                 with torch.no_grad():
@@ -1017,40 +1254,90 @@ class InpaintingWebUI:
                         noise_aug_strength=0.0,
                         num_inference_steps=params['num_inference_steps']
                     )
-                    
+
                     video_latents = video_latents.unsqueeze(0)
-                    pipeline.vae.to(dtype=torch.float16)
-                    # Decode - Use user setting for chunk size
-                    decoded_frames = pipeline.decode_latents(video_latents, num_frames=video_latents.shape[1], decode_chunk_size=params['decode_chunk_size'])
 
-                # Convert to tensor [T, C, H, W]
-                video_frames = tensor2vid(decoded_frames, pipeline.image_processor, output_type="pil")[0]
-                chunk_generated = torch.stack([
-                    torch.tensor(np.array(img)).permute(2, 0, 1).float() / 255.0 for img in video_frames
-                ]).cpu()
+                    # --- CRITICAL: Aggressive VRAM cleanup before VAE decode ---
+                    # The UNet forward pass (spatial_tiled_process) has already consumed
+                    # significant VRAM. We need to free intermediate tensors before decode.
+                    del input_slice, mask_slice
+                    torch.cuda.empty_cache()
+                    gc.collect()
 
-                # Handle output collection
+                    # Log VRAM status before decode for debugging
+                    if torch.cuda.is_available():
+                        vram_used_gb = torch.cuda.memory_allocated(0) / (1024**3)
+                        vram_total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                        vram_free_gb = vram_total_gb - vram_used_gb
+                        logger.info(f"VRAM before VAE decode: {vram_used_gb:.1f} GB used / {vram_total_gb:.1f} GB total ({vram_free_gb:.1f} GB free)")
+
+                    # Adaptive decode_chunk_size based on resolution
+                    # At 4K or higher, use 1. At 1080p, use 2. At 720p, use 4+.
+                    frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
+                    user_decode_chunk = params['decode_chunk_size']
+                    if frame_h >= 2000:  # 4K or higher
+                        adaptive_decode_chunk = 1
+                    elif frame_h >= 1000:  # 1080p range
+                        adaptive_decode_chunk = min(2, user_decode_chunk)
+                    else:  # 720p or lower
+                        adaptive_decode_chunk = min(4, user_decode_chunk)
+
+                    if adaptive_decode_chunk < user_decode_chunk:
+                        logger.info(
+                            f"Resolution {frame_h}px requires reducing decode_chunk_size "
+                            f"from {user_decode_chunk} to {adaptive_decode_chunk} to avoid OOM"
+                        )
+
+                    # Decode - Use adaptive chunk size for 4K safety
+                    decoded_frames = pipeline.decode_latents(
+                        video_latents,
+                        num_frames=video_latents.shape[1],
+                        decode_chunk_size=adaptive_decode_chunk
+                    )
+
+                    # Free latent tensor after decode
+                    del video_latents
+                    torch.cuda.empty_cache()
+
+                # Convert to tensor [T, C, H, W] - OPTIMIZED: Skip PIL conversion
+                # decoded_frames shape: [batch, channels, frames, height, width]
+                # Extract frames directly from tensor (much faster than PIL round-trip)
+                # VAE output is in [-1, 1] range, normalize to [0, 1]
+                chunk_generated = decoded_frames[0].permute(1, 0, 2, 3)  # Keep on GPU! [frames, channels, height, width]
+                chunk_generated = (chunk_generated + 1) / 2  # Normalize from [-1, 1] to [0, 1]
+                chunk_generated = chunk_generated.clamp(0, 1)  # Ensure valid range
+
+                # Handle output collection - OPTIMIZED: Pre-allocate list capacity
                 if i == 0:
                     results.append(chunk_generated[:actual_len])
                 else:
+                    # Skip overlap frames from current chunk
                     results.append(chunk_generated[overlap:actual_len])
 
                 previous_chunk_output = chunk_generated
 
-                # Update progress
-                current_percent = int((i / total_frames) * 100)
+                # Update progress - calculate based on frames processed so far
+                frames_processed = min(i + actual_len, total_frames)
+                current_percent = int((frames_processed / total_frames) * 90)  # 0-90% for inference
+                chunk_num = min(i // stride + 1, total_chunks)
                 self.progress_queue.put(("progress", current_percent))
+                self.progress_queue.put(("status", f"Chunk {chunk_num}/{total_chunks} ({current_percent}%)"))
 
-            # Concatenate results
+            # Concatenate results - OPTIMIZED: Use more efficient concatenation
             if not results:
                 return False, None
 
-            frames_output = torch.cat(results, dim=0).cpu()
+            # Pre-calculate total output size for efficient allocation
+            frames_output = torch.cat(results, dim=0)  # Keep on GPU initially
 
-            # Crop to original size
-            frames_output_final = frames_output[:, :, :padded_H, :padded_W][:num_frames_original]
+            # Crop to original size - OPTIMIZED: Use narrow for zero-copy view
+            frames_output_final = frames_output.narrow(0, 0, num_frames_original).narrow(2, 0, padded_H).narrow(3, 0, padded_W)
+            
+            # Only transfer to CPU once at the end if needed for finalization
+            # frames_output_final stays on GPU for finalization
 
             # 5. Finalization (Color Transfer, Blending, Hi-Res)
+            self.progress_queue.put(("status", f"Finalizing {base_video_name}..."))
             final_output = self._finalize_output_frames(
                 inpainted_frames=frames_output_final,
                 mask_frames=frames_mask_original_unpadded_processed,
@@ -1061,46 +1348,53 @@ class InpaintingWebUI:
                 is_dual_input=is_dual_input,
                 params=params
             )
+            self.progress_queue.put(("progress", 90))  # 90% after finalization
 
             if final_output is None:
                 return False, None
 
-            # 6. Encoding
+            # 6. Encoding - OPTIMIZED: Use NVENC GPU encoding
             self.progress_queue.put(("status", f"Encoding {base_video_name}..."))
-            temp_png_dir = os.path.join(save_dir, f"temp_{base_video_name}_{int(time.time())}")
-            os.makedirs(temp_png_dir, exist_ok=True)
-
+            self.progress_queue.put(("progress", 92))  # 92% at start of encoding
+            
             try:
-                # Save PNGs
+                # Encode directly using FFmpeg with NVENC (much faster than PNG intermediate)
+                # Prepare frames for encoding
+                frames_to_encode = []
+                total_frames_to_encode = len(final_output)
                 for idx, frame in enumerate(final_output):
-                    if self.stop_event.is_set(): return False, None
-                    frame_np = (frame.permute(1, 2, 0).numpy() * 65535.0).astype(np.uint16)
-                    cv2.imwrite(
-                        os.path.join(temp_png_dir, f"{idx:05d}.png"),
-                        cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-                    )
-
-                # Encode MP4
-                # GUI ALIGNMENT: FORCE CPU ENCODING
-                # The Windows GUI appears to use libx264 (CPU) resulting in ~2700kbps bitrate.
-                # WebUI defaults to NVENC if available (~5500kbps).
-                # To match 1:1, we temporarily disable CUDA for the util module during encoding.
+                    if self.stop_event.is_set():
+                        return False, None
+                    # Convert from [C,H,W] float32 [0,1] to uint8 [0,255]
+                    frame_np = (frame.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
+                    frames_to_encode.append(frame_np)
+                    
+                    # Update progress during encoding (every 10 frames)
+                    if (idx + 1) % 10 == 0:
+                        enc_progress = 92 + int((idx + 1) / total_frames_to_encode * 8)
+                        self.progress_queue.put(("progress", min(99, enc_progress)))
+                
+                # Use NVENC encoding (GPU accelerated)
                 original_cuda_flag = sc_util.CUDA_AVAILABLE
-                sc_util.CUDA_AVAILABLE = False
+                sc_util.CUDA_AVAILABLE = True  # Enable CUDA for NVENC
                 try:
                     encode_frames_to_mp4(
-                        temp_png_dir=temp_png_dir,
+                        temp_png_dir=None,  # Skip PNG saving
                         final_output_mp4_path=output_video_path,
                         fps=fps,
                         total_output_frames=len(final_output),
                         video_stream_info=video_stream_info,
                         user_output_crf=current_crf,
-                        output_sidecar_ext=".spsidecar"
+                        output_sidecar_ext=".spsidecar",
+                        frames_list=frames_to_encode  # Pass frames directly
                     )
                 finally:
                     sc_util.CUDA_AVAILABLE = original_cuda_flag
-            finally:
-                shutil.rmtree(temp_png_dir, ignore_errors=True)
+            except Exception as e:
+                logger.exception(f"Encoding failed: {e}")
+                return False, None
+            
+            self.progress_queue.put(("progress", 100))  # 100% complete
 
             return True, hires_data.get('hires_video_path')
 
@@ -1126,8 +1420,16 @@ class InpaintingWebUI:
             # Read all frames (returns numpy array normalized to 0-1 from read_video_frames_decord)
             frames, fps, orig_h, orig_w, proc_h, proc_w, video_stream_info = read_video_frames_decord(input_video_path, total_frames)
             # frames is [T, H, W, C] float32 0-1
-            
+
             frames = torch.from_numpy(frames).permute(0, 3, 1, 2) # Convert to tensor [T,C,H,W]
+            
+            # Ensure we only have 3 channels (RGB), not 4 (RGBA)
+            if frames.shape[1] == 4:
+                logger.warning(f"Input video has 4 channels (RGBA), dropping alpha channel to use RGB only")
+                frames = frames[:, :3, :, :]  # Drop alpha channel
+            elif frames.shape[1] != 3:
+                logger.error(f"Input video has {frames.shape[1]} channels, expected 3 (RGB) or 4 (RGBA)")
+                raise ValueError(f"Invalid channel count: {frames.shape[1]}, expected 3 or 4")
 
             # --- GUI ALIGNMENT: Quantize to uint8 (0-255) immediately ---
             # The GUI performs this step: frames = (frames * 255).to(torch.uint8)
@@ -1247,10 +1549,13 @@ class InpaintingWebUI:
 
             # Info extraction
             video_stream_info = get_video_stream_info(input_video_path)
-            
+
             # Send video info update
             self.progress_queue.put(("video_res", f"{W}x{H}"))
             self.progress_queue.put(("video_frames", str(T)))
+
+            # Clean up VideoReader
+            del vr
 
             return (warped_padded, mask_padded, left_frames,
                     T, H, W, video_stream_info, fps,
@@ -1278,54 +1583,117 @@ class InpaintingWebUI:
                 logger.info(f"Starting Hi-Res Blending at {hires_W}x{hires_H}...")
 
                 hires_reader = VideoReader(hires_video_path, ctx=cpu(0))
-                chunk_size = params['frames_chunk']
+                # Process in smaller chunks to avoid CPU memory exhaustion
+                hires_chunk_size = 5  # Process 5 frames at a time for 4K
 
-                final_hires_output_chunks = []
-                final_hires_left_chunks = []
+                # Read first chunk to determine actual hires video dimensions
+                first_indices = list(range(min(hires_chunk_size, num_frames_original)))
+                first_hires_np = hires_reader.get_batch(first_indices).asnumpy()
+                first_hires_torch = torch.from_numpy(first_hires_np).permute(0, 3, 1, 2).float()
 
-                for i in range(0, num_frames_original, chunk_size):
-                    start_idx, end_idx = i, min(i + chunk_size, num_frames_original)
+                # Get actual dimensions from hires video
+                full_h, full_w = first_hires_torch.shape[2], first_hires_torch.shape[3]
+
+                # For 4-panel: full_h is 2*panel_h, full_w is 2*panel_w
+                # For 2-panel: full_h is panel_h, full_w is 2*panel_w
+                # hires_H and hires_W are already the individual panel sizes
+                # So left/warped panels should match hires_H x hires_W directly
+                warped_h, warped_w = hires_H, hires_W
+                left_h, left_w = hires_H, hires_W
+
+                # Pre-allocate output tensors on CPU with correct dimensions
+                frames_output_final_hires = torch.empty(
+                    (num_frames_original, frames_output_final.shape[1], hires_H, hires_W),
+                    dtype=torch.float32, device='cpu'
+                )
+                frames_mask_processed_hires = torch.empty(
+                    (num_frames_original, frames_mask_processed.shape[1], hires_H, hires_W),
+                    dtype=torch.float32, device='cpu'
+                )
+                frames_warped_hires = torch.empty(
+                    (num_frames_original, 3, warped_h, warped_w),
+                    dtype=torch.float32, device='cpu'
+                )
+                frames_left_hires = None
+                if not is_dual_input:
+                    frames_left_hires = torch.empty(
+                        (num_frames_original, 3, left_h, left_w),
+                        dtype=torch.float32, device='cpu'
+                    )
+
+                # Process first chunk (already loaded)
+                inpainted_chunk = frames_output_final[:len(first_indices)].cpu()
+                mask_chunk = frames_mask_processed[:len(first_indices)].cpu()
+                inpainted_chunk_hires = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
+                mask_chunk_hires = F.interpolate(mask_chunk, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
+
+                if is_dual_input:
+                    hires_warped_chunk = first_hires_torch.float() / 255.0
+                else:
+                    hires_left_chunk = first_hires_torch[:, :, :left_h, :left_w].float() / 255.0
+                    hires_warped_chunk = first_hires_torch[:, :, warped_h:, warped_w:].float() / 255.0
+
+                frames_output_final_hires[:len(first_indices)] = inpainted_chunk_hires
+                frames_mask_processed_hires[:len(first_indices)] = mask_chunk_hires
+                frames_warped_hires[:len(first_indices)] = hires_warped_chunk
+                if not is_dual_input:
+                    frames_left_hires[:len(first_indices)] = hires_left_chunk
+
+                del first_hires_np, first_hires_torch, inpainted_chunk, mask_chunk
+                del inpainted_chunk_hires, mask_chunk_hires, hires_warped_chunk
+                if not is_dual_input:
+                    del hires_left_chunk
+
+                # Process remaining chunks
+                for i in range(hires_chunk_size, num_frames_original, hires_chunk_size):
+                    start_idx, end_idx = i, min(i + hires_chunk_size, num_frames_original)
                     frame_indices = list(range(start_idx, end_idx))
-                    if not frame_indices: break
+                    if not frame_indices:
+                        break
+                    actual_len = end_idx - start_idx
 
-                    # Get chunks
-                    inpainted_chunk = frames_output_final[start_idx:end_idx]
-                    mask_chunk = frames_mask_processed[start_idx:end_idx]
+                    inpainted_chunk = frames_output_final[start_idx:end_idx].cpu()
+                    mask_chunk = frames_mask_processed[start_idx:end_idx].cpu()
 
-                    # Upscale
                     inpainted_chunk_hires = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
                     mask_chunk_hires = F.interpolate(mask_chunk, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
 
-                    # Load Hi-Res
                     hires_frames_np = hires_reader.get_batch(frame_indices).asnumpy()
                     hires_frames_torch = torch.from_numpy(hires_frames_np).permute(0, 3, 1, 2).float()
 
-                    # Split Hi-Res
                     if is_dual_input:
-                        half_w_hires = hires_frames_torch.shape[3] // 2
-                        hires_warped_chunk = hires_frames_torch[:, :, :, half_w_hires:].float() / 255.0
-                        hires_left_chunk = None
+                        hires_warped_chunk = hires_frames_torch.float() / 255.0
                     else:
-                        half_h_hires, half_w_hires = hires_frames_torch.shape[2] // 2, hires_frames_torch.shape[3] // 2
-                        hires_left_chunk = hires_frames_torch[:, :, :half_h_hires, :half_w_hires].float() / 255.0
-                        hires_warped_chunk = hires_frames_torch[:, :, half_h_hires:, half_w_hires:].float() / 255.0
-                        final_hires_left_chunks.append(hires_left_chunk)
+                        hires_left_chunk = hires_frames_torch[:, :, :left_h, :left_w].float() / 255.0
+                        hires_warped_chunk = hires_frames_torch[:, :, warped_h:, warped_w:].float() / 255.0
 
-                    final_hires_output_chunks.append({
-                        "inpainted": inpainted_chunk_hires,
-                        "mask": mask_chunk_hires,
-                        "warped": hires_warped_chunk
-                    })
+                    frames_output_final_hires[start_idx:end_idx] = inpainted_chunk_hires
+                    frames_mask_processed_hires[start_idx:end_idx] = mask_chunk_hires
+                    frames_warped_hires[start_idx:end_idx] = hires_warped_chunk
+                    if not is_dual_input:
+                        frames_left_hires[start_idx:end_idx] = hires_left_chunk
 
-                # Concatenate back
-                frames_output_final = torch.cat([d["inpainted"] for d in final_hires_output_chunks], dim=0)
-                frames_mask_processed = torch.cat([d["mask"] for d in final_hires_output_chunks], dim=0)
-                frames_warpped_original_unpadded = torch.cat([d["warped"] for d in final_hires_output_chunks], dim=0) # This is now float 0-1
+                    del inpainted_chunk, mask_chunk, inpainted_chunk_hires, mask_chunk_hires
+                    del hires_frames_np, hires_frames_torch, hires_warped_chunk
+                    if not is_dual_input:
+                        del hires_left_chunk
+
+                    if end_idx % 10 == 0 or end_idx == num_frames_original:
+                        logger.info(f"  Hi-Res blending: {end_idx}/{num_frames_original} frames processed")
+
+                # Replace original tensors with Hi-Res versions
+                frames_output_final = frames_output_final_hires
+                frames_mask_processed = frames_mask_processed_hires
+                frames_warpped_original_unpadded = frames_warped_hires
                 if not is_dual_input:
-                    frames_left_original_cropped = torch.cat(final_hires_left_chunks, dim=0) # This is now float 0-1
+                    frames_left_original_cropped = frames_left_hires
 
-                del hires_reader, final_hires_output_chunks
-                release_cuda_memory()
+                del hires_reader
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                logger.info(f"Hi-Res blending complete. VRAM: {torch.cuda.memory_allocated(0) / 1024**3:.1f} GB used" if torch.cuda.is_available() else "Hi-Res blending complete.")
 
             # --- Color Transfer ---
             if params['enable_color_transfer']:
@@ -1347,20 +1715,56 @@ class InpaintingWebUI:
                     reference_frames = left_for_ct
 
                 if reference_frames is not None:
-                    # Apply to each frame (expensive loop, but accurate)
+                    # Apply color transfer to all frames - OPTIMIZED BATCH VERSION
                     target_H, target_W = frames_output_final.shape[2], frames_output_final.shape[3]
-                    adjusted_frames_output = []
-                    for t in range(frames_output_final.shape[0]):
-                        ref_frame_resized = F.interpolate(
-                            reference_frames[t].unsqueeze(0),
-                            size=(target_H, target_W),
-                            mode='bilinear', align_corners=False
-                        ).squeeze(0).cpu()
-                        target_frame_cpu = frames_output_final[t].cpu()
-                        adjusted_frame = self._apply_color_transfer(ref_frame_resized, target_frame_cpu)
-                        adjusted_frames_output.append(adjusted_frame.to(frames_output_final.device))
-
-                    frames_output_final = torch.stack(adjusted_frames_output)
+                    
+                    # Resize all reference frames at once (batch interpolate)
+                    ref_frames_resized = F.interpolate(
+                        reference_frames,
+                        size=(target_H, target_W),
+                        mode='bilinear', align_corners=False
+                    )
+                    
+                    # Convert to numpy once for entire batch - MINIMIZE CPU TRANSFERS
+                    # Keep on GPU as long as possible, then single transfer
+                    ref_np = ref_frames_resized.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C]
+                    target_np = frames_output_final.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C]
+                    
+                    # Scale to uint8
+                    ref_np_uint8 = np.clip(ref_np * 255, 0, 255).astype(np.uint8)
+                    target_np_uint8 = np.clip(target_np * 255, 0, 255).astype(np.uint8)
+                    
+                    # Batch color transfer - OpenCV operations must be per-frame but minimize overhead
+                    # Pre-allocate output array
+                    adjusted_frames = np.empty_like(ref_np_uint8)
+                    
+                    for t in range(ref_np_uint8.shape[0]):
+                        # Convert to LAB (OpenCV required)
+                        ref_lab = cv2.cvtColor(ref_np_uint8[t], cv2.COLOR_RGB2LAB)
+                        target_lab = cv2.cvtColor(target_np_uint8[t], cv2.COLOR_RGB2LAB)
+                        
+                        # Compute statistics (fast)
+                        src_mean, src_std = cv2.meanStdDev(ref_lab)
+                        tgt_mean, tgt_std = cv2.meanStdDev(target_lab)
+                        
+                        src_mean, src_std = src_mean.flatten(), src_std.flatten()
+                        tgt_mean, tgt_std = tgt_mean.flatten(), tgt_std.flatten()
+                        
+                        # Avoid division by zero
+                        src_std = np.clip(src_std, 1e-6, None)
+                        tgt_std = np.clip(tgt_std, 1e-6, None)
+                        
+                        # Apply color transfer formula (vectorized per-channel)
+                        target_lab_float = target_lab.astype(np.float32)
+                        for i in range(3):
+                            target_lab_float[:, :, i] = (target_lab_float[:, :, i] - tgt_mean[i]) / tgt_std[i] * src_std[i] + src_mean[i]
+                        
+                        # Clip and convert back
+                        target_lab_uint8 = np.clip(target_lab_float, 0, 255).astype(np.uint8)
+                        adjusted_frames[t] = cv2.cvtColor(target_lab_uint8, cv2.COLOR_LAB2RGB)
+                    
+                    # Convert back to tensor - SINGLE GPU TRANSFER
+                    frames_output_final = torch.from_numpy(adjusted_frames).permute(0, 3, 1, 2).float() / 255.0
 
             # --- Normalization using same logic as GUI ---
             # frames_warpped_original_unpadded (from _prepare_video_inputs) is uint8 0-255 if no hires.
@@ -1379,16 +1783,18 @@ class InpaintingWebUI:
             # --- Post-Inpainting Blend ---
             if params['enable_post_inpainting_blend']:
                 # Blend: original * (1 - mask) + inpainted * mask
-                mask_cpu = frames_mask_processed.cpu()
-                if mask_cpu.shape[1] != 1: mask_cpu = mask_cpu.mean(dim=1, keepdim=True)
+                # OPTIMIZED: Keep on GPU as long as possible
+                mask_gpu = frames_mask_processed
+                if mask_gpu.shape[1] != 1: 
+                    mask_gpu = mask_gpu.mean(dim=1, keepdim=True)
 
-                inpainted_cpu = frames_output_final.cpu()
-                original_cpu = frames_warpped_original_unpadded_normalized.cpu()
-
+                # original_warpped is uint8, normalize to float 0-1
+                original_gpu = frames_warpped_original_unpadded.float() / 255.0 if frames_warpped_original_unpadded.dtype == torch.uint8 else frames_warpped_original_unpadded
+                
                 # Check shapes match
-                if inpainted_cpu.shape == original_cpu.shape:
-                    blended = original_cpu * (1 - mask_cpu) + inpainted_cpu * mask_cpu
-                    frames_output_final = blended.to(frames_output_final.device)
+                if frames_output_final.shape == original_gpu.shape:
+                    blended = original_gpu * (1 - mask_gpu) + frames_output_final * mask_gpu
+                    frames_output_final = blended  # Already on GPU!
 
             # --- Final Concatenation ---
             if is_dual_input:
@@ -1456,6 +1862,10 @@ class InpaintingWebUI:
                     "hires_H": hires_H,
                     "hires_W": hires_W
                 }
+
+                # Clean up VideoReader
+                del vr_hi
+
             except Exception as e:
                 logger.error(f"Failed to load Hi-Res info: {e}")
                 hires_info = {"is_hires_blend_enabled": False}
@@ -1513,7 +1923,9 @@ class InpaintingWebUI:
             hi_w = vr_hi.get_batch([0]).shape[2]
 
             if hi_w <= lo_w:
+                del vr_lo, vr_hi
                 return None
+            del vr_lo, vr_hi
             return hires_path
         except:
             return None

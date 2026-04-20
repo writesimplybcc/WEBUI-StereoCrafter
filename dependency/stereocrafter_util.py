@@ -2192,8 +2192,15 @@ def start_ffmpeg_pipe_process(
                     logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                                f"Cloud environment detected - using HEVC NVENC for fast GPU encoding.")
                     output_codec = "hevc_nvenc"
-                    output_pix_fmt = "yuv420p10le"
-                    output_profile = "main10"
+                    # FIX: Use 8-bit for NVENC at 8K to avoid FFmpeg 6.1.1 crash with 10-bit + 8K width
+                    # NVENC 10-bit encoding is unstable at 7680px width in FFmpeg 6.1.1
+                    if is_8k_or_higher:
+                        output_pix_fmt = "yuv420p"  # 8-bit is stable for 8K NVENC
+                        output_profile = "main"
+                        logger.info("8K NVENC: Using 8-bit (yuv420p) instead of 10-bit for stability")
+                    else:
+                        output_pix_fmt = "yuv420p10le"
+                        output_profile = "main10"
                     if user_output_crf is None:
                         if is_8k_or_higher:
                             default_nvenc_cq = "24"  # HEVC CQ for 8K
@@ -2209,8 +2216,14 @@ def start_ffmpeg_pipe_process(
                         logger.info(f"{res_label} resolution detected ({content_width}x{content_height}). "
                                    f"Local high-VRAM system ({total_vram_gb:.1f}GB) - using HEVC NVENC.")
                         output_codec = "hevc_nvenc"
-                        output_pix_fmt = "yuv420p10le"
-                        output_profile = "main10"
+                        # FIX: Use 8-bit for NVENC at 8K to avoid FFmpeg 6.1.1 crash with 10-bit + 8K width
+                        if is_8k_or_higher:
+                            output_pix_fmt = "yuv420p"  # 8-bit is stable for 8K NVENC
+                            output_profile = "main"
+                            logger.info("8K NVENC: Using 8-bit (yuv420p) instead of 10-bit for stability")
+                        else:
+                            output_pix_fmt = "yuv420p10le"
+                            output_profile = "main10"
                         if user_output_crf is None:
                             if is_8k_or_higher:
                                 default_nvenc_cq = "24"
