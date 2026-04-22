@@ -19,6 +19,9 @@ from PIL import Image as PILImage
 import gradio as gr
 from decord import VideoReader, cpu
 
+# Optimize CUDA memory allocation to avoid fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
+
 from ..base.base_ui import BaseWebUI
 import dependency.stereocrafter_util as sc_util
 from dependency.stereocrafter_util import (
@@ -1750,10 +1753,14 @@ class MergingWebUI:
                     logger.info(f"✅ Successfully merged: {base_name} ({frame_count}/{num_frames} frames)")
                     yield f"Completed: {base_name}", ((i+1)/total_videos*100)
 
-                    # Clear GPU memory between videos to prevent accumulation
+                    # Clear GPU memory between videos to prevent accumulation and fragmentation
                     try:
-                        from dependency.stereocrafter_util import release_cuda_memory
-                        release_cuda_memory()
+                        import torch
+                        torch.cuda.synchronize()
+                        for _ in range(3):
+                            torch.cuda.empty_cache()
+                        gc.collect()
+                        torch.cuda.reset_peak_memory_stats()
                         logger.debug(f"Cleared GPU memory after processing video {i + 1}")
                     except Exception as e:
                         logger.warning(f"Failed to clear memory after video {i + 1}: {e}")

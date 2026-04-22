@@ -16,7 +16,7 @@ import torch
 
 # Optimize CUDA memory allocation to avoid fragmentation
 # This must be set before any CUDA operations
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
 
 import gradio as gr
 from typing import Optional, Tuple, List
@@ -1102,9 +1102,13 @@ class InpaintingWebUI:
                 else:
                     self.progress_queue.put(("status", f"Failed {basename}"))
 
-                # Clear GPU memory between videos to prevent accumulation
+                # Clear GPU memory between videos to prevent accumulation and fragmentation
                 try:
-                    release_cuda_memory()
+                    torch.cuda.synchronize()
+                    for _ in range(3):
+                        torch.cuda.empty_cache()
+                    gc.collect()
+                    torch.cuda.reset_peak_memory_stats()
                     logger.debug(f"Cleared GPU memory after processing video {idx + 1}")
                 except Exception as e:
                     logger.warning(f"Failed to clear memory after video {idx + 1}: {e}")

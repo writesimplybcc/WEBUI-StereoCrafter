@@ -7,9 +7,6 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="diffusers.models.transformers.transformer_2d")
 import logging # Import standard logging
 
-# Configure PyTorch CUDA memory allocator for better fragmentation handling
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-
 # Use WARNING or ERROR to silence model loading messages.
 logging.getLogger("diffusers").setLevel(logging.WARNING) 
 logging.getLogger("transformers").setLevel(logging.WARNING) 
@@ -80,11 +77,10 @@ class DepthCrafterDemo:
                 pre_train_path,
                 unet=unet,
                 torch_dtype=torch.float16,
-                variant="fp16",
                 local_files_only=local_files_only
             )
             # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
-
+            
             cpu_offload_lower = cpu_offload
 
             if cpu_offload_lower == "sequential":
@@ -93,14 +89,6 @@ class DepthCrafterDemo:
             elif cpu_offload_lower == "model":
                 self.pipe.enable_model_cpu_offload()
                 _logger.info("CPU Offload set to 'model'.")
-            elif cpu_offload_lower == "shared_memory":
-                # Hybrid approach: Keep UNet + VAE on GPU, move image encoder to CPU/shared RAM
-                # Best for systems with shared GPU memory (e.g., RTX 3060 12GB + 32GB shared)
-                _logger.info("CPU Offload set to 'shared_memory' (hybrid)")
-                # Move image encoder to CPU (used only once per window)
-                self.pipe.image_encoder = self.pipe.image_encoder.cpu()
-                # Enable model offload for remaining components
-                self.pipe.enable_model_cpu_offload()
             else:
                 # If the value is "none", "None", or any other unrecognized string/value
                 # (or the legacy string "None"), we default to full CUDA.
@@ -139,6 +127,31 @@ class DepthCrafterDemo:
                     _logger.info("xFormers memory-efficient attention disabled by global setting.")
 
             _logger.debug("DepthCrafterPipeline initialized successfully.") # This was already there, ensure it remains.
+
+            # Additional memory optimizations
+            try:
+                self.pipe.enable_attention_slicing("max")
+                _logger.info("Attention slicing enabled for memory efficiency.")
+            except Exception as e:
+                _logger.warning(f"Could not enable attention slicing: {e}")
+
+            try:
+                self.pipe.enable_vae_slicing()
+                _logger.info("VAE slicing enabled for memory efficiency.")
+            except Exception as e:
+                _logger.warning(f"Could not enable VAE slicing: {e}")
+
+            try:
+                self.pipe.enable_vae_tiling()
+                _logger.info("VAE tiling enabled for memory efficiency.")
+            except Exception as e:
+                _logger.warning(f"Could not enable VAE tiling: {e}")
+
+            try:
+                self.pipe.unet.enable_gradient_checkpointing()
+                _logger.info("Gradient checkpointing enabled on UNet for memory efficiency.")
+            except Exception as e:
+                _logger.warning(f"Could not enable gradient_checkpointing: {e}")
         except Exception as e:
             _logger.critical(f"CRITICAL: Failed to initialize DepthCrafterPipeline: {e}", exc_info=True)
             raise # Re-raise after logging
@@ -207,7 +220,16 @@ class DepthCrafterDemo:
                      user_target_width: int,
                      segment_job_info: Optional[dict],
                      job_specific_metadata: dict
-                     ) -> Tuple[Optional[np.ndarray], float, int, int]:
+                      ) -> Tuple[Optional[np.ndarray], float, int, int]:
+        # Automatically reduce resolution for very high res to prevent OOM during loading
+        max_res = 1024
+        if user_target_height > max_res:
+            _logger.warning(f"Target height {user_target_height} > {max_res}, reducing to {max_res} to prevent OOM")
+            user_target_height = max_res
+        if user_target_width > max_res:
+            _logger.warning(f"Target width {user_target_width} > {max_res}, reducing to {max_res} to prevent OOM")
+            user_target_width = max_res
+
         actual_frames_to_process = None
         actual_fps_for_save = 30.0
         original_h_loaded, original_w_loaded = None, None
@@ -354,34 +376,23 @@ class DepthCrafterDemo:
     def _perform_inference(self, actual_frames_to_process: np.ndarray,
                            guidance_scale: float, num_denoising_steps: int,
                            pipe_call_window_size: int, pipe_call_overlap: int,
-                           pipe_call_decode_chunk_size: int,
                            segment_job_info: Optional[dict],
                            actual_processed_height: int, actual_processed_width: int # <--- RENAMED
                            ) -> np.ndarray:
         current_pipe_window_for_call = pipe_call_window_size
         current_pipe_overlap_for_call = pipe_call_overlap
-        current_decode_chunk_size = pipe_call_decode_chunk_size
+        if segment_job_info:
+            # Cap window size for segments to prevent OOM, while maintaining temporal consistency
+            max_window_for_segments = 16  # Adjust based on memory constraints
+            current_pipe_window_for_call = min(actual_frames_to_process.shape[0], max_window_for_segments)
+            current_pipe_overlap_for_call = max(0, current_pipe_window_for_call // 4)  # Small overlap for continuity
+        # For high resolution, reduce window size to prevent OOM
+        if actual_processed_height > 1000 or actual_processed_width > 1000:
+            current_pipe_window_for_call = min(current_pipe_window_for_call, 16)
+            current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, 4)
 
-        # Only set overlap to 0 if this is actually a segment job (not full video)
-        # Check if segment_job_info exists AND has is_segment=True
-        if segment_job_info and segment_job_info.get("is_segment", False):
-            current_pipe_window_for_call = actual_frames_to_process.shape[0]
-            current_pipe_overlap_for_call = 0
-
-        _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_processed_height}x{actual_processed_width}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}, Decode Chunk: {current_decode_chunk_size}")
-
-        # Check if running in cloud environment
-        is_cloud_env = os.environ.get('RUNPOD_POD_ID') or os.environ.get('VAST_CONTAINERLABEL') or os.environ.get('PAPERSPACE_MACHINE_ID')
-
-        # Clear CUDA cache before inference (lightweight on cloud)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            if not is_cloud_env:
-                # Only do full GC on local environments
-                gc.collect()
-
+        _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_frames_to_process.shape[1]}x{actual_frames_to_process.shape[2]}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}")
         with torch.inference_mode():
-            # Process in chunks to manage memory more efficiently
             res = self.pipe(
                 actual_frames_to_process,
                 height=actual_processed_height, # <--- USE RENAMED PARAM
@@ -391,16 +402,16 @@ class DepthCrafterDemo:
                 num_inference_steps=num_denoising_steps,
                 window_size=current_pipe_window_for_call,
                 overlap=current_pipe_overlap_for_call,
-                decode_chunk_size=current_decode_chunk_size,
             ).frames[0]
-
-            # Lightweight memory cleanup after inference
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
         _logger.debug(f"Inference completed. Result shape: {res.shape}")
 
-        if res.ndim == 4 and res.shape[-1] > 1:
+        # Clear GPU memory to prevent OOM in subsequent operations
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+
+        if res.ndim == 4 and res.shape[-1] > 1: 
             res = res.sum(-1) / res.shape[-1]
             _logger.debug(f"Inference result (RGB/RGBA) averaged to grayscale. Final shape: {res.shape}")
         return res
@@ -550,7 +561,6 @@ class DepthCrafterDemo:
                         seed_val: int, original_video_basename: str,
                         process_length_for_read: int, gui_target_fps_for_job: float,
                         pipe_call_window_size: int, pipe_call_overlap: int,
-                        pipe_call_decode_chunk_size: int,
                         segment_job_info: Optional[dict] = None,
                         should_save_intermediate_visuals: bool = False,
                         intermediate_visual_format_to_save: str = "none",
@@ -560,25 +570,6 @@ class DepthCrafterDemo:
         infer_start_time = time.perf_counter()
         set_seed(seed_val)
         _logger.debug(f"Starting inference job for: {original_video_basename} (Seed: {seed_val}, Segment: {bool(segment_job_info)}, ID: {segment_job_info.get('segment_id', -1) if segment_job_info else -1})")
-
-        # Check VRAM availability before starting
-        from dependency.stereocrafter_util import get_current_vram_usage, check_vram_availability
-        vram_stats = get_current_vram_usage()
-        if vram_stats['available']:
-            _logger.info(f"Pre-inference VRAM status: {vram_stats['free']:.2f} GB free / {vram_stats['total']:.2f} GB total")
-            
-            # Estimate required VRAM based on resolution and frame count
-            num_frames = process_length_for_read if process_length_for_read > 0 else 100
-            resolution_factor = (user_target_height * user_target_width) / (1920 * 1080)  # Normalized to 1080p
-            estimated_vram_needed = 8.0 * resolution_factor * (num_frames / 100.0)  # Base estimate
-            
-            _logger.info(f"Estimated VRAM needed: {estimated_vram_needed:.2f} GB (frames: {num_frames}, resolution factor: {resolution_factor:.2f})")
-            
-            if not check_vram_availability(estimated_vram_needed * 0.8, f"DepthCrafter inference ({original_video_basename})"):
-                _logger.warning(
-                    f"Low VRAM detected. Consider reducing window_size, overlap, or resolution. "
-                    f"Current settings: window_size={pipe_call_window_size}, overlap={pipe_call_overlap}"
-                )
 
         actual_save_folder_for_output, output_filename_for_meta, full_save_path = \
             self._setup_paths(base_output_folder, original_video_basename, segment_job_info)
@@ -620,8 +611,7 @@ class DepthCrafterDemo:
 
         inference_result = self._perform_inference(
             actual_frames_to_process, guidance_scale, num_denoising_steps,
-            pipe_call_window_size, pipe_call_overlap, pipe_call_decode_chunk_size,
-            segment_job_info,
+            pipe_call_window_size, pipe_call_overlap, segment_job_info,
             actual_processed_h, actual_processed_w
             )
 
@@ -673,17 +663,14 @@ class DepthCrafterDemo:
             video_path_or_frames_or_info: Union[str, np.ndarray, dict],
             num_denoising_steps: int, guidance_scale: float,
             base_output_folder: str, gui_window_size: int, gui_overlap: int,
-            gui_decode_chunk_size: int,
-            process_length_for_read_full_video: int, target_height: int, target_width: int,
+            process_length_for_read_full_video: int, target_height: int, target_width: int, 
             seed: int, original_video_basename_override: Optional[str] = None,
             segment_job_info_param: Optional[dict] = None,
             keep_intermediate_npz_config: bool = False,
             intermediate_segment_visual_format_config: str = "none",
             save_final_json_for_this_job_config: bool = False
             ):
-
-        _logger.info(f"DEBUG: DepthCrafterDemo.run called - gui_window_size={gui_window_size}, gui_overlap={gui_overlap}")
-
+        
         video_path_or_info_for_infer_load: Union[str, dict]
         frames_array_input = None
         original_basename_for_job: str
@@ -749,13 +736,12 @@ class DepthCrafterDemo:
             frames_array_if_provided=frames_array_input,
             num_denoising_steps=num_denoising_steps, guidance_scale=guidance_scale,
             base_output_folder=base_output_folder,
-            user_target_width=target_width, user_target_height=target_height,
+            user_target_width=target_width, user_target_height=target_height, 
             seed_val=seed,
             original_video_basename=original_basename_for_job,
             process_length_for_read=effective_process_length_for_infer,
             gui_target_fps_for_job=gui_fps_setting_for_job,
             pipe_call_window_size=gui_window_size, pipe_call_overlap=gui_overlap,
-            pipe_call_decode_chunk_size=gui_decode_chunk_size,
             segment_job_info=segment_job_info_param,
             should_save_intermediate_visuals=should_save_visuals_for_infer,
             intermediate_visual_format_to_save=intermediate_visual_fmt_for_infer,

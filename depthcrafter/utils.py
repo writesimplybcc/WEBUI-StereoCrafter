@@ -43,16 +43,6 @@ if DEFAULT_SINGLE_IMAGE_CLIP_FRAMES <= 0:
 
 # --- NEW UTILITY FUNCTIONS ---
 
-def flush_memory_every_n_frames(current_frame_idx: int, flush_frequency: int = 6):
-    """
-    Flush memory every n frames based on the overlap + 1 rule.
-    If overlap = 5, then flush every 6th frame (overlap + 1).
-    """
-    if flush_frequency > 0 and (current_frame_idx + 1) % flush_frequency == 0:
-        torch.cuda.empty_cache()
-        gc.collect()
-        _logger.debug(f"Memory flushed after processing frame {current_frame_idx + 1} (frequency: {flush_frequency})")
-
 def format_duration(seconds: float) -> str:
     """Converts seconds to H:MM:SS.s format."""
     if seconds < 0:

@@ -511,7 +511,16 @@ class DepthCrafterWebUI(BaseWebUI):
             target_height = int(target_height)
             target_width = int(target_width)
             min_frames_to_keep_npz = int(min_frames_to_keep_npz)
-            
+
+            # Automatically reduce resolution for very high res to prevent OOM
+            max_res = 1024
+            if target_height > max_res:
+                logger.warning(f"Target height {target_height} > {max_res}, reducing to {max_res} to prevent OOM")
+                target_height = max_res
+            if target_width > max_res:
+                logger.warning(f"Target width {target_width} > {max_res}, reducing to {max_res} to prevent OOM")
+                target_width = max_res
+
             logger.info("="*60)
             logger.info("PROCESSING STARTED - Actual Values Being Used")
             logger.info("="*60)
@@ -536,7 +545,7 @@ class DepthCrafterWebUI(BaseWebUI):
 
             # Set PyTorch CUDA memory config to reduce fragmentation
             import os
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:512'
             logger.info("Model initialized successfully")
             
             progress(0.1, desc="Scanning for videos...")
@@ -831,12 +840,18 @@ class DepthCrafterWebUI(BaseWebUI):
                 
                 logger.info(f"Completed video {video_idx + 1}/{total_videos}: {original_basename}")
 
-                # Clear GPU memory between videos to prevent accumulation
+                # Clear GPU memory between videos to prevent accumulation and fragmentation
                 try:
                     import torch
                     import gc
-                    torch.cuda.empty_cache()
+                    # Synchronize to ensure all CUDA operations complete
+                    torch.cuda.synchronize()
+                    # Empty cache multiple times to handle fragmentation
+                    for _ in range(3):
+                        torch.cuda.empty_cache()
                     gc.collect()
+                    # Reset memory stats to clear any lingering references
+                    torch.cuda.reset_peak_memory_stats()
                     logger.debug(f"Cleared GPU memory after processing video {video_idx + 1}")
                 except Exception as e:
                     logger.warning(f"Failed to clear memory after video {video_idx + 1}: {e}")
@@ -849,7 +864,10 @@ class DepthCrafterWebUI(BaseWebUI):
             # Clean up large objects to prevent memory accumulation
             try:
                 del demo
-                logger.debug("Deleted DepthCrafter demo object")
+                demo = None  # Explicitly set to None
+                gc.collect()
+                torch.cuda.empty_cache()
+                logger.debug("Deleted DepthCrafter demo object and forced garbage collection")
             except Exception as e:
                 logger.warning(f"Failed to delete demo object: {e}")
 

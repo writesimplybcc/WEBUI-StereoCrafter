@@ -1,6 +1,5 @@
 from typing import Callable, Dict, List, Optional, Union
 
-import os
 import numpy as np
 import torch
 import logging 
@@ -65,6 +64,12 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             video_latents.append(
                 self.vae.encode(video[i : i + chunk_size]).latent_dist.mode()
             )
+            # Clear GPU memory after each chunk to prevent OOM
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+                gc.collect()
         video_latents = torch.cat(video_latents, dim=0)
         return video_latents
 
@@ -129,58 +134,11 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
         num_frames = video.shape[0]
-        
-        # Log incoming window_size and overlap from caller
-        logger.info(f"Pipeline received: window_size={window_size}, overlap={overlap}")
-        
-        # Use VRAM-aware configuration for decode chunk size with adaptive scaling
-        from dependency.stereocrafter_util import get_vram_config, get_adaptive_vram_config
-        base_vram_config = get_vram_config()
-        
-        # Apply adaptive scaling based on video resolution and frame count
-        # BUT: Only apply to decode_chunk_size, NOT to window_size/overlap if explicitly provided
-        vram_config = get_adaptive_vram_config(width, height, num_frames, base_vram_config)
-        decode_chunk_size = decode_chunk_size if decode_chunk_size is not None else vram_config['decode_chunk_size']
-
-        # CRITICAL FIX: Only apply VRAM config defaults if window_size/overlap are None or old defaults
-        # This preserves user-provided values from GUI
-        original_window_size = window_size
-        original_overlap = overlap
-        
-        if window_size is None:
-            # No user preference, use VRAM config (already scaled)
-            logger.info("window_size was None, using VRAM config default")
-            window_size = vram_config['window_size']
-        elif window_size == 110:
-            # Old default value, replace with VRAM config
-            logger.info("window_size was old default (110), using VRAM config")
-            window_size = vram_config['window_size']
-        # else: User provided explicit value, keep it as-is
-        
-        if overlap is None:
-            # No user preference, use VRAM config (already scaled)
-            logger.info("overlap was None, using VRAM config default")
-            overlap = vram_config['overlap']
-        elif overlap == 25:
-            # Old default value, replace with VRAM config
-            logger.info("overlap was old default (25), using VRAM config")
-            overlap = vram_config['overlap']
-        # else: User provided explicit value, keep it as-is
-        
-        # Log if we're using user-provided values
-        if window_size == original_window_size and original_window_size is not None and original_window_size != 110:
-            logger.info(f"Using user-provided window_size: {window_size}")
-        if overlap == original_overlap and original_overlap is not None and original_overlap != 25:
-            logger.info(f"Using user-provided overlap: {overlap}")
-
-        # Only adjust if video is STRICTLY shorter than window (not equal)
-        if num_frames < window_size:
-            logger.info(f"Video has fewer frames ({num_frames}) than window_size ({window_size}), adjusting")
+        decode_chunk_size = decode_chunk_size if decode_chunk_size is not None else 2
+        if num_frames <= window_size:
             window_size = num_frames
             overlap = 0
         stride = window_size - overlap
-        
-        logger.info(f"Final pipeline settings: window_size={window_size}, overlap={overlap}, stride={stride}")
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(video, height, width)
@@ -227,12 +185,25 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         if needs_upcasting:
             self.vae.to(dtype=torch.float32)
 
+        # Adjust chunk size for high resolution to prevent OOM, but keep sufficient for temporal VAE
+        if video.shape[2] > 2000 or video.shape[3] > 2000:
+            encode_chunk_size = 4
+        else:
+            encode_chunk_size = decode_chunk_size
+
         video_latents = self.encode_vae_video(
             video.to(self.vae.dtype),
-            chunk_size=decode_chunk_size,
+            chunk_size=encode_chunk_size,
         ).unsqueeze(
             0
         )  # [1, t, c, h, w]
+
+        # Clear memory after VAE encoding
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            gc.collect()
 
         if track_time:
             encode_event.record()
@@ -240,9 +211,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             elapsed_time_ms = start_event.elapsed_time(encode_event)
             print(f"Elapsed time for encoding video: {elapsed_time_ms} ms")
 
-        # CRITICAL: Free VRAM by deleting original video tensor after encoding
-        # The video tensor is no longer needed after creating video_latents and video_embeddings
-        del video, noise
         torch.cuda.empty_cache()
 
         # cast back to fp16 if needed
@@ -294,30 +262,15 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         # inference strategy for long videos
         # two main strategies: 1. noise init from previous frame, 2. segments stitching
-        # Implement memory flush mechanism: flush every N segments
-        # On cloud/dedicated GPUs, flush less frequently for better speed
-        is_cloud_env = os.environ.get('RUNPOD_POD_ID') or os.environ.get('VAST_CONTAINERLABEL') or os.environ.get('PAPERSPACE_MACHINE_ID')
-        flush_frequency = max(3, overlap + 1) if is_cloud_env else max(1, overlap + 1)
-        frames_processed = 0
-
         while idx_start < num_frames - overlap:
             idx_end = min(idx_start + window_size, num_frames)
             self.scheduler.set_timesteps(num_inference_steps, device=device)
 
             # 9. Denoising loop
             latents = latents_init[:, : idx_end - idx_start].clone()
-            
-            # CRITICAL VRAM OPTIMIZATION: After first window, latents_init is reduced
-            # from full window_size to only (overlap + stride) which equals window_size.
-            # However, we keep the sliding buffer pattern for consistency.
-            # The key optimization is that we delete the original full latents_init
-            # and replace it with a smaller sliding buffer after first use.
             latents_init = torch.cat(
                 [latents_init[:, -overlap:], latents_init[:, :stride]], dim=1
             )
-            # After this operation, the original large latents_init buffer is freed
-            # and replaced with a new tensor of the same logical size but without
-            # any accumulated gradient history or fragmentation.
 
             video_latents_current = video_latents[:, idx_start:idx_end]
             video_embeddings_current = video_embeddings[:, idx_start:idx_end]
@@ -377,11 +330,6 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                             noise_pred - noise_pred_uncond
                         )
                     latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-                    
-                    # Clear intermediate tensors after each denoising step (lightweight cleanup)
-                    del noise_pred, latent_model_input
-                    if self.do_classifier_free_guidance and 'noise_pred_uncond' in locals():
-                        del noise_pred_uncond
 
                     if callback_on_step_end is not None:
                         callback_kwargs = {}
@@ -411,29 +359,15 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                 ] * weights + latents_all[:, -overlap:] * (1 - weights)
                 latents_all = torch.cat([latents_all, latents[:, overlap:]], dim=1)
 
-            # Clear current segment tensors before moving to next segment
-            del video_latents_current, video_embeddings_current, latents
-            
-            idx_start += stride
-            
-            # Increment frames processed counter
-            frames_processed += 1
-            
-            # Memory flush mechanism: flush less frequently on cloud for better speed
-            if frames_processed % flush_frequency == 0:
+            # Clear memory after processing each window
+            del latents
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
-                if not is_cloud_env:
-                    # Only do full GC on local environments
-                    import gc
-                    gc.collect()
+                torch.cuda.reset_peak_memory_stats()
+                gc.collect()
 
-        # CRITICAL VRAM OPTIMIZATION: Free video_latents and video_embeddings after inference
-        # These large tensors are no longer needed after the denoising loop completes
-        del video_latents, video_embeddings
-        torch.cuda.empty_cache()
-        if not is_cloud_env:
-            import gc
-            gc.collect()
+            idx_start += stride
 
         if track_time:
             denoise_event.record()
@@ -446,6 +380,14 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
             if needs_upcasting:
                 self.vae.to(dtype=torch.float16)
             frames = self.decode_latents(latents_all, num_frames, decode_chunk_size)
+
+            # Clear memory after decoding
+            del latents_all
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+                gc.collect()
 
             if track_time:
                 decode_event.record()

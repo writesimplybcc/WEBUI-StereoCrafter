@@ -26,6 +26,9 @@ from gui.utils import VideoFileClip
 
 # Import custom modules
 CUDA_AVAILABLE = False # start state, will check automaticly later
+
+# Optimize CUDA memory allocation to avoid fragmentation
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
         
 # --- MODIFIED IMPORT ---
 from dependency.stereocrafter_util import (
@@ -2623,9 +2626,13 @@ class SplatterWebUI:
 
                 overall_task_counter += tasks_processed
                 
-                # Clear GPU memory between videos to prevent accumulation
+                # Clear GPU memory between videos to prevent accumulation and fragmentation
                 try:
-                    release_cuda_memory()
+                    torch.cuda.synchronize()
+                    for _ in range(3):
+                        torch.cuda.empty_cache()
+                    gc.collect()
+                    torch.cuda.reset_peak_memory_stats()
                     logger.debug(f"Cleared GPU memory after processing video {idx + 1}")
                 except Exception as e:
                     logger.warning(f"Failed to clear memory after video {idx + 1}: {e}")
