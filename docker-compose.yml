@@ -1,62 +1,41 @@
 version: '3.8'
 
 services:
-  stereocrafter-webui:
-    image: johnsdoes/stereocrafter-webui:latest
-    container_name: stereocrafter-webui
-    
-    # GPU support
+  stereocrafter:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./input_source_clips:/app/input_source_clips
+      - ./output_depthmaps:/app/output_depthmaps
+      - ./output_splatted:/app/output_splatted
+      - ./completed_output:/app/completed_output
+      - ./final_videos:/app/final_videos
+    environment:
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
-    
-    # Port mapping
-    ports:
-      - "7860:7860"  # Gradio web interface
-    
-    # Volume mounts
-    volumes:
-      # Mount your code for live updates (development mode)
-      - ./webui.py:/workspace/WEBUI-StereoCrafter/webui.py
-      - ./gui:/workspace/WEBUI-StereoCrafter/gui
-      - ./stereocrafter_ui:/workspace/WEBUI-StereoCrafter/stereocrafter_ui
-      # Mount weights folder (so you don't re-download models)
-      - ./weights:/workspace/WEBUI-StereoCrafter/weights
-      
-      # Mount input/output folders for easy access
-      - ./source_video:/workspace/WEBUI-StereoCrafter/source_video
-      - ./input_source_clips:/workspace/WEBUI-StereoCrafter/input_source_clips
-      - ./output_depthmaps:/workspace/WEBUI-StereoCrafter/output_depthmaps
-      - ./output_splatted:/workspace/WEBUI-StereoCrafter/output_splatted
-      - ./completed_output:/workspace/WEBUI-StereoCrafter/completed_output
-      - ./final_videos:/workspace/WEBUI-StereoCrafter/final_videos
-      - ./dependency:/workspace/WEBUI-StereoCrafter/dependency
-      - ./depthcrafter:/workspace/WEBUI-StereoCrafter/depthcrafter
 
-    # Environment variables
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - ./input_source_clips:/srv/input_source_clips
+      - ./output_depthmaps:/srv/output_depthmaps
+      - ./output_splatted:/srv/output_splatted
+      - ./completed_output:/srv/completed_output
+      - ./final_videos:/srv/final_videos
+      - ./filebrowser.db:/database/filebrowser.db
+      - ./filebrowser-config:/config
     environment:
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - HF_TOKEN=${HF_TOKEN}  # Set this in .env file
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
-    
-    # Restart policy
+      - FB_BASEURL=/filebrowser
     restart: unless-stopped
-    
-    # Use host network for better performance (optional)
-    # network_mode: host
-    
-    # Shared memory size (important for PyTorch)
-    shm_size: '16gb'
-    
-    # Health check
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+    depends_on:
+      - stereocrafter

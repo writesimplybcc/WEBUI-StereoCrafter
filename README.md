@@ -34,6 +34,49 @@ All credit for the core StereoCrafter technology goes to the original authors at
 
 Original Paper: [StereoCrafter: Diffusion-based Generation of Long and High-fidelity Stereoscopic 3D from Monocular Videos](https://arxiv.org/abs/2409.07447)
 
+## 📁 File Browser Integration
+
+This project now includes **File Browser** (https://filebrowser.org) for enhanced file management capabilities:
+
+### Features Added:
+- **Modern Web File Manager** - Drag-and-drop file operations, directory navigation
+- **Advanced File Operations** - Upload, download, create, rename, move, delete files
+- **User Authentication** - Secure access control with configurable permissions
+- **Multiple File Formats** - Support for images, videos, documents, archives
+- **Responsive Interface** - Works on desktop and mobile devices
+
+### Integration Options:
+
+#### Option 1: Docker Compose (Recommended)
+```bash
+# Start both StereoCrafter and File Browser
+docker-compose up -d
+
+# Access:
+# - StereoCrafter: http://localhost:7860
+# - File Browser: http://localhost:8080
+```
+
+#### Option 2: Standalone Installation
+```bash
+# Download latest File Browser binary
+curl -fsSL https://filebrowser.org/get.sh | bash
+
+# Configure and run
+filebrowser config init
+filebrowser config set --address 0.0.0.0 --port 8080 --root /path/to/stereocrafter/data
+filebrowser users add admin admin --perm.admin
+filebrowser
+```
+
+#### Option 3: Side-by-Side with Existing File Manager
+The File Manager tab now shows both the original StereoCrafter file manager and a link to the external File Browser instance.
+
+### Configuration
+- **Default Credentials**: admin / stereocrafter2026 (change in production!)
+- **Shared Volumes**: File Browser mounts the same directories as StereoCrafter
+- **Security**: Configured with appropriate permissions for file management
+
 ### Project Status
 
 ⚠️ **This is a passion project built in free time!**

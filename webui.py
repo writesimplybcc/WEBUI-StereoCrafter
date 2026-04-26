@@ -65,7 +65,16 @@ class CombinedWebUI:
                 self.merging_gui.create_interface()
             
             with gr.Tab("📂 File Manager"):
-                self.file_manager_gui.create_interface()
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Current File Manager")
+                        self.file_manager_gui.create_interface()
+                    with gr.Column():
+                        gr.Markdown("### File Browser (External)")
+                        gr.Markdown("File Browser runs on a separate port. Click below to access:")
+                        filebrowser_url = "http://localhost:8080"  # Adjust port as needed
+                        gr.Markdown(f"[Open File Browser]({filebrowser_url})")
+                        gr.Button("🔗 Launch File Browser", link=filebrowser_url)
         
         return interface
 

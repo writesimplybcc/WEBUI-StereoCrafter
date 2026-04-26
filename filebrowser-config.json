@@ -1,0 +1,36 @@
+# File Browser Configuration for StereoCrafter Integration
+
+# Server configuration
+port: 8080
+baseURL: "/filebrowser"
+log: "stdout"
+
+# Authentication (set a strong password in production)
+username: "admin"
+password: "stereocrafter2026"  # CHANGE THIS IN PRODUCTION!
+
+# Root directory (mounted volumes from StereoCrafter)
+root: "/srv"
+
+# Database
+database: "/database/filebrowser.db"
+
+# Disable signup for security
+signup: false
+
+# Enable perm (permissions) for user management
+perm:
+  admin: true
+  execute: true
+  create: true
+  rename: true
+  modify: true
+  delete: true
+  share: true
+  download: true
+
+# Custom branding
+branding:
+  name: "StereoCrafter File Manager"
+  files: "/config/branding"
+  disableExternal: true
