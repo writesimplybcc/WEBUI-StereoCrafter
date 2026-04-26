@@ -49,12 +49,33 @@ This project now includes **File Browser** (https://filebrowser.org) for enhance
 
 #### Option 1: Docker Compose (Recommended)
 ```bash
-# Start both StereoCrafter and File Browser
+# 1. Copy and edit environment variables
+cp .env.example .env
+# Edit .env file with your credentials
+
+# 2. Pre-initialize File Browser (optional, for cloud deployment)
+./preinit-filebrowser.sh
+
+# 3. Start both services
 docker-compose up -d
 
 # Access:
 # - StereoCrafter: http://localhost:7860
 # - File Browser: http://localhost:8080
+```
+
+#### Option 1.5: Cloud Deployment (RunPod/Vast.AI)
+```bash
+# 1. Set environment variables before pod launch
+export FB_USERNAME="your_username"
+export FB_PASSWORD="your_secure_password"
+
+# 2. Or create .env file and upload to pod
+cp .env.example .env
+# Edit with your credentials, then upload to pod
+
+# 3. Launch pod with docker-compose
+docker-compose up -d
 ```
 
 #### Option 2: Standalone Installation

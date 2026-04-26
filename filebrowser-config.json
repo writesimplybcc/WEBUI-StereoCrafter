@@ -5,9 +5,11 @@ port: 8080
 baseURL: "/filebrowser"
 log: "stdout"
 
-# Authentication (set a strong password in production)
-username: "admin"
-password: "stereocrafter2026"  # CHANGE THIS IN PRODUCTION!
+# Authentication - SET VIA ENVIRONMENT VARIABLES IN PRODUCTION
+# Use FB_USERNAME and FB_PASSWORD environment variables
+# These defaults are for local development only
+username: "stereocrafter"
+password: "CHANGE_THIS_PASSWORD_BEFORE_DEPLOYMENT_12345"
 
 # Root directory (mounted volumes from StereoCrafter)
 root: "/srv"
