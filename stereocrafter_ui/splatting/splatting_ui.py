@@ -45,6 +45,8 @@ except:
     from dependency.forward_warp_pytorch import forward_warp
     logger.info("Forward Warp Pytorch is active.")
 from dependency.video_previewer import VideoPreviewer
+import sys
+sys.path.append(r'E:\StereoCrafter')
 
 # Import core modules for advanced features
 try:

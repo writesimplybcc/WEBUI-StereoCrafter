@@ -1,4 +1,5 @@
 from typing import Callable, Dict, List, Optional, Union
+import gc
 
 import numpy as np
 import torch
@@ -72,6 +73,20 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
                 gc.collect()
         video_latents = torch.cat(video_latents, dim=0)
         return video_latents
+
+    def enable_vae_slicing(self):
+        """Enable VAE slicing for memory efficiency"""
+        if hasattr(self.vae, 'enable_slicing'):
+            self.vae.enable_slicing()
+        else:
+            raise AttributeError(f"VAE {type(self.vae)} does not support slicing")
+
+    def enable_vae_tiling(self):
+        """Enable VAE tiling for memory efficiency"""
+        if hasattr(self.vae, 'enable_tiling'):
+            self.vae.enable_tiling()
+        else:
+            raise AttributeError(f"VAE {type(self.vae)} does not support tiling")
 
     @staticmethod
     def check_inputs(video, height, width):
