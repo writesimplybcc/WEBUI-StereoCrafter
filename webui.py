@@ -83,7 +83,7 @@ def launch():
     """Launch the combined WebUI"""
     app = CombinedWebUI()
     interface = app.create_interface()
-    interface.launch(share=True, server_name="0.0.0.0", server_port=7860)
+    interface.launch(share=False, server_name="0.0.0.0", server_port=7860)
 
 
 if __name__ == "__main__":

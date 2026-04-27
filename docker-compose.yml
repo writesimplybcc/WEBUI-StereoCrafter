@@ -27,13 +27,13 @@ services:
     ports:
       - "8080:80"
     volumes:
-      - ./input_source_clips:/srv
-      - ./output_depthmaps:/srv/output_depthmaps
-      - ./output_splatted:/srv/output_splatted
-      - ./completed_output:/srv/completed_output
-      - ./final_videos:/srv/final_videos
-      - ./filebrowser_db:/app
-      - ./empty-config.json:/config/settings.json
+      - F:\WEBUI-StereoCrafter\input_source_clips:/srv/input_source_clips
+      - F:\WEBUI-StereoCrafter\output_depthmaps:/srv/output_depthmaps
+      - F:\WEBUI-StereoCrafter\output_splatted:/srv/output_splatted
+      - F:\WEBUI-StereoCrafter\completed_output:/srv/completed_output
+      - F:\WEBUI-StereoCrafter\final_videos:/srv/final_videos
+      - F:\WEBUI-StereoCrafter\filebrowser_db:/app
+      - F:\WEBUI-StereoCrafter\empty-config.json:/config/settings.json
     entrypoint: ["sh", "-c"]
     command: ["filebrowser --database /app/filebrowser.db --root /srv --address 0.0.0.0 --port 80"]
     restart: unless-stopped

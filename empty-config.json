@@ -3,5 +3,7 @@
   "address": "0.0.0.0",
   "log": "stdout",
   "database": "/app/filebrowser.db",
-  "root": "/srv"
+  "root": "/srv",
+  "username": "admin",
+  "password": "admin1admin2"
 }
