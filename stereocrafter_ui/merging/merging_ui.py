@@ -17,14 +17,11 @@ import torch.nn.functional as F
 from PIL import Image as PILImage
 import gradio as gr
 from decord import VideoReader, cpu
-import sys
-sys.path.append(r'E:\StereoCrafter')
-
 from ..base.base_ui import BaseWebUI
-from core.common.cli_utils import draw_progress_bar
-from core.common.gpu_utils import release_cuda_memory, CUDA_AVAILABLE
-from core.common.video_io import get_video_stream_info, encode_frames_to_mp4, start_ffmpeg_pipe_process
-from core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph
+from ...core.common.cli_utils import draw_progress_bar
+from ...core.common.gpu_utils import release_cuda_memory, CUDA_AVAILABLE
+from ...core.common.video_io import get_video_stream_info, encode_frames_to_mp4, start_ffmpeg_pipe_process
+from ...core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph
 import logging
 
 logger = logging.getLogger(__name__)
