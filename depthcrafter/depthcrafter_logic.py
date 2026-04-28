@@ -392,6 +392,7 @@ class DepthCrafterDemo:
             current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, 4)
 
         _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_frames_to_process.shape[1]}x{actual_frames_to_process.shape[2]}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}")
+        torch.cuda.empty_cache()
         with torch.inference_mode():
             res = self.pipe(
                 actual_frames_to_process,
