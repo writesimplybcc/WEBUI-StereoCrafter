@@ -519,7 +519,7 @@ class InpaintingWebUI:
             
             return {
                 'input_folder': './output_splatted/lowres',
-                'output_folder': './completed_output',
+                'output_folder': './output_inpainted',
                 'hires_blend_folder': './output_splatted/hires',
                 'num_inference_steps': 5,
                 'tile_num': 1,
@@ -553,7 +553,7 @@ class InpaintingWebUI:
             config = self.load_config()
             return (
                 config.get('input_folder', './output_splatted/lowres'),
-                config.get('output_folder', './completed_output'),
+                config.get('output_folder', './output_inpainted'),
                 config.get('hires_blend_folder', './output_splatted/hires'),
                 config.get('num_inference_steps', 5),
                 config.get('decode_chunk_size', self.vram_defaults['decode_chunk_size']),
@@ -580,7 +580,7 @@ class InpaintingWebUI:
         """Reset all parameters to default values (VRAM-aware)"""
         return (
             './output_splatted/lowres',  # input_folder
-            './completed_output',  # output_folder
+            './output_inpainted',  # output_folder
             './output_splatted/hires',  # hires_blend_folder
             5,  # num_inference_steps
             self.vram_defaults['decode_chunk_size'],  # decode_chunk_size (VRAM-aware)
@@ -621,7 +621,7 @@ class InpaintingWebUI:
                 )
                 output_folder = gr.Textbox(
                     label="Output Folder",
-                    value=self.app_config.get("output_folder", "./completed_output"),
+                    value=self.app_config.get("output_folder", "./output_inpainted"),
                     info="Choose the directory where the processed (inpainted) videos will be saved. Output will be Side-by-Side (original | inpainted) for quad inputs, or only the inpainted right eye for dual inputs."
                 )
             

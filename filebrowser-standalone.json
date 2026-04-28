@@ -1,0 +1,20 @@
+{
+  "port": 8080,
+  "address": "0.0.0.0",
+  "log": "stdout",
+  "database": "./filebrowser-standalone.db",
+  "root": ".",
+  "username": "stereocrafter",
+  "password": "CHANGE_THIS_PASSWORD_BEFORE_DEPLOYMENT_12345",
+  "permissions": {
+    "admin": true,
+    "execute": true,
+    "create": true,
+    "rename": true,
+    "modify": true,
+    "delete": true,
+    "share": true,
+    "download": true
+  },
+  "baseURL": ""
+}

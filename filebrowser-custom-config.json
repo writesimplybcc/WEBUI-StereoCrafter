@@ -1,0 +1,19 @@
+{
+  "port": 80,
+  "address": "0.0.0.0",
+  "log": "stdout",
+  "database": "/tmp/filebrowser.db",
+  "root": "/srv",
+  "username": "stereocrafter",
+  "password": "CHANGE_THIS_PASSWORD_BEFORE_DEPLOYMENT_12345",
+  "permissions": {
+    "admin": true,
+    "execute": true,
+    "create": true,
+    "rename": true,
+    "modify": true,
+    "delete": true,
+    "share": true,
+    "download": true
+  }
+}
