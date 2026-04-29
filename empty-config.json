@@ -1,9 +1,20 @@
 {
   "port": 80,
+  "baseURL": "",
   "address": "0.0.0.0",
   "log": "stdout",
   "database": "/app/filebrowser.db",
   "root": "/srv",
   "username": "admin",
-  "password": "admin1admin2"
+  "password": "stereocrafter2026",
+  "permissions": {
+    "admin": true,
+    "execute": true,
+    "create": true,
+    "rename": true,
+    "modify": true,
+    "delete": true,
+    "share": true,
+    "download": true
+  }
 }
