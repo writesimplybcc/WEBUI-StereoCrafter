@@ -28,6 +28,9 @@ from depthcrafter.utils import (
     save_depth_visual_as_single_exr_util,
     read_image_sequence_as_frames,
     create_frames_from_single_image,
+
+# Import VRAM utility for dynamic resolution cap
+from dependency.stereocrafter_util import get_current_vram_usage
     format_duration,
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
@@ -222,7 +225,25 @@ class DepthCrafterDemo:
                      job_specific_metadata: dict
                       ) -> Tuple[Optional[np.ndarray], float, int, int]:
         # Automatically reduce resolution for very high res to prevent OOM during loading
-        max_res = 1024
+        # Dynamic max_res based on available VRAM
+        try:
+            vram_info = get_current_vram_usage()
+            total_vram = vram_info.get('total_gb', 8)  # Default to 8GB if unavailable
+            free_vram = vram_info.get('free_gb', total_vram)
+            free_percentage = free_vram / total_vram if total_vram > 0 else 0
+            effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.2
+            # Set max_res based on effective VRAM tiers
+            if effective_vram < 8:
+                max_res = 512
+            elif effective_vram < 12:
+                max_res = 768
+            elif effective_vram < 24:
+                max_res = 1024
+            else:
+                max_res = 1024  # Cap at 1024 as model may not support higher reliably
+        except Exception as e:
+            _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
+            max_res = 1024
         if user_target_height > max_res:
             _logger.warning(f"Target height {user_target_height} > {max_res}, reducing to {max_res} to prevent OOM")
             user_target_height = max_res
