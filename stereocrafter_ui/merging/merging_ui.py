@@ -1128,12 +1128,25 @@ class MergingWebUI:
                     mask_gray_np = np.mean(mask_np, axis=3)
                     mask = torch.from_numpy(mask_gray_np).float().unsqueeze(1) # [B, 1, H, W]
 
-                    # Move to GPU if requested
+                    # Move to GPU if requested, with OOM fallback to CPU
                     dev = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
-                    mask = mask.to(dev)
-                    inpainted_chunk = inpainted_chunk.to(dev)
-                    original_left = original_left.to(dev)
-                    warped_original = warped_original.to(dev)
+                    try:
+                        mask = mask.to(dev)
+                        inpainted_chunk = inpainted_chunk.to(dev)
+                        original_left = original_left.to(dev)
+                        warped_original = warped_original.to(dev)
+                        gpu_success = True
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower() and dev == "cuda":
+                            logger.warning(f"GPU OOM detected during tensor allocation, falling back to CPU for chunk {frame_start} of {base_name}")
+                            dev = "cpu"
+                            mask = mask.to(dev)
+                            inpainted_chunk = inpainted_chunk.to(dev)
+                            original_left = original_left.to(dev)
+                            warped_original = warped_original.to(dev)
+                            gpu_success = False
+                        else:
+                            raise
 
                     # Resize
                     if inpainted_chunk.shape[2] != hires_H or inpainted_chunk.shape[3] != hires_W:
