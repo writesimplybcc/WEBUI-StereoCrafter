@@ -9,7 +9,7 @@ services:
       - ./input_source_clips:/workspace/WEBUI-StereoCrafter/input_source_clips
       - ./output_depthmaps:/workspace/WEBUI-StereoCrafter/output_depthmaps
       - ./output_splatted:/workspace/WEBUI-StereoCrafter/output_splatted
-      - ./output_inpainted:/workspace/WEBUI-StereoCrafter/completed_output
+      - ./output_inpainted:/workspace/WEBUI-StereoCrafter/output_inpainted
       - ./final_videos:/workspace/WEBUI-StereoCrafter/final_videos
     environment:
       - GRADIO_SERVER_NAME=0.0.0.0
@@ -32,7 +32,7 @@ services:
       - ./input_source_clips:/srv/input_source_clips
       - ./output_depthmaps:/srv/output_depthmaps
       - ./output_splatted:/srv/output_splatted
-      - ./output_inpainted:/srv/completed_output
+      - ./output_inpainted:/srv/output_inpainted
       - ./final_videos:/srv/final_videos
       - ./filebrowser_db:/app
       - ./empty-config.json:/config/settings.json
