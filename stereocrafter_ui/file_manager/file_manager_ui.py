@@ -21,7 +21,7 @@ class FileManagerUI:
         "Depth Maps": "./output_depthmaps/",
         "Splatted (Low-Res)": "./output_splatted/lowres/",
         "Splatted (Hi-Res)": "./output_splatted/hires/",
-        "Inpainted Output": "./completed_output/",
+        "Inpainted Output": "./output_inpainted/",
         "Final Videos": "./final_videos/",
         "---": None,  # Separator
         "Source Videos (Finished)": "./source_video/finished/",
@@ -29,7 +29,7 @@ class FileManagerUI:
         "Depth Maps (Finished)": "./output_depthmaps/finished/",
         "Splatted Low-Res (Finished)": "./output_splatted/lowres/finished/",
         "Splatted Hi-Res (Finished)": "./output_splatted/hires/finished/",
-        "Inpainted (Finished)": "./completed_output/finished/",
+        "Inpainted (Finished)": "./output_inpainted/finished/",
         "Final Videos (Finished)": "./final_videos/finished/",
     }
     
