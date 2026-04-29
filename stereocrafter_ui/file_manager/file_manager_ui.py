@@ -370,6 +370,67 @@ class FileManagerUI:
             return None, f"❌ Failed to create zip: {str(e)}"
 
     
+    def upload_files(self, folder_name: str, uploaded_files) -> Tuple[List[List], str, str]:
+        """
+        Upload files to the current folder
+        Returns: (updated_file_data, stats_text, status_message)
+        """
+        if folder_name == "---":
+            return [], "", "⚠️ Please select a folder"
+
+        folder_path = self.FOLDERS.get(folder_name, "./")
+
+        if not os.path.exists(folder_path):
+            return [], "", f"❌ Folder does not exist: {folder_path}"
+
+        if not uploaded_files or len(uploaded_files) == 0:
+            return [], "", "⚠️ No files selected for upload"
+
+        uploaded_count = 0
+        failed_files = []
+
+        for uploaded_file in uploaded_files:
+            try:
+                # In Gradio 4, uploaded_file is the temp file path
+                if isinstance(uploaded_file, str):
+                    temp_path = uploaded_file
+                    filename = os.path.basename(temp_path)
+                else:
+                    # Fallback for other formats
+                    temp_path = str(uploaded_file)
+                    filename = os.path.basename(temp_path)
+
+                if not temp_path or not os.path.exists(temp_path):
+                    failed_files.append(f"{filename} (file not found)")
+                    continue
+
+                dest_path = os.path.join(folder_path, filename)
+
+                # Check if file already exists
+                if os.path.exists(dest_path):
+                    failed_files.append(f"{filename} (already exists)")
+                    continue
+
+                # Copy the file
+                shutil.copy2(temp_path, dest_path)
+                uploaded_count += 1
+
+            except Exception as e:
+                filename = os.path.basename(str(uploaded_file)) if uploaded_file else 'unknown'
+                failed_files.append(f"{filename} ({str(e)})")
+
+        # Generate status message
+        status_msg = f"✅ Uploaded {uploaded_count} file(s) to {folder_path}"
+        if failed_files:
+            status_msg += f"\n❌ Failed: {len(failed_files)} file(s)\n" + "\n".join(failed_files[:5])
+            if len(failed_files) > 5:
+                status_msg += f"\n... and {len(failed_files) - 5} more"
+
+        # Refresh file list
+        new_file_data, new_stats = self.scan_folder(folder_name)
+
+        return new_file_data, new_stats, status_msg
+
     def clean_finished_files(self, folder_name: str) -> Tuple[List[List], str, str]:
         """
         Move all files to finished subfolder
@@ -529,7 +590,16 @@ class FileManagerUI:
             deselect_all_btn = gr.Button("☐ Deselect All", size="sm")
             select_finished_btn = gr.Button("📥 Select Finished", size="sm")
             download_btn = gr.Button("⬇️ Download", size="sm")
-        
+
+        # Upload section
+        gr.Markdown("### 📤 Upload Files")
+        upload_files = gr.File(
+            label="Select files to upload",
+            file_count="multiple",
+            file_types=["video", "image", "text", "json", ".mp4", ".avi", ".mov", ".mkv", ".webm", ".png", ".jpg", ".jpeg", ".exr", ".txt", ".json", ".sidecar"]
+        )
+        upload_btn = gr.Button("📤 Upload to Current Folder", variant="secondary")
+
         gr.Markdown("💡 **Tip:** Check the boxes next to files you want to move or delete")
         
         # Download output (visible so user can click to download)
@@ -656,5 +726,12 @@ class FileManagerUI:
             inputs=[folder_dropdown],
             outputs=[file_list, stats_display, status_label]
         )
-        
+
+        # Upload files
+        upload_btn.click(
+            fn=self.upload_files,
+            inputs=[folder_dropdown, upload_files],
+            outputs=[file_list, stats_display, status_label]
+        )
+
         return folder_dropdown, file_list, stats_display, status_label
