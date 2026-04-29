@@ -232,15 +232,17 @@ class DepthCrafterDemo:
             free_vram = vram_info.get('free_gb', total_vram)
             free_percentage = free_vram / total_vram if total_vram > 0 else 0
             effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.2
-            # Set max_res based on effective VRAM tiers
-            if effective_vram < 8:
-                max_res = 512
-            elif effective_vram < 12:
-                max_res = 768
-            elif effective_vram < 24:
-                max_res = 1024
-            else:
-                max_res = 1024  # Cap at 1024 as model may not support higher reliably
+                # Set max_res based on effective VRAM tiers
+                if effective_vram < 8:
+                    max_res = 512
+                elif effective_vram < 12:
+                    max_res = 768
+                elif effective_vram < 24:
+                    max_res = 1024
+                elif effective_vram < 48:
+                    max_res = 1024  # Conservative for 24-48GB
+                else:
+                    max_res = 1536  # Allow higher for 48GB+ GPUs, model may support up to 1536
         except Exception as e:
             _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
             max_res = 1024

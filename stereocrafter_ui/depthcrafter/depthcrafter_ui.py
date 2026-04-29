@@ -529,8 +529,10 @@ class DepthCrafterWebUI(BaseWebUI):
                     max_res = 768
                 elif effective_vram < 24:
                     max_res = 1024
+                elif effective_vram < 48:
+                    max_res = 1024  # Conservative for 24-48GB
                 else:
-                    max_res = 1024  # Cap at 1024 as model may not support higher reliably
+                    max_res = 1536  # Allow higher for 48GB+ GPUs, model may support up to 1536
             except Exception as e:
                 logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
                 max_res = 1024
