@@ -28,9 +28,6 @@ from depthcrafter.utils import (
     save_depth_visual_as_single_exr_util,
     read_image_sequence_as_frames,
     create_frames_from_single_image,
-
-# Import VRAM utility for dynamic resolution cap
-from dependency.stereocrafter_util import get_current_vram_usage
     format_duration,
     get_segment_output_folder_name,
     get_segment_npz_output_filename,
@@ -38,6 +35,9 @@ from dependency.stereocrafter_util import get_current_vram_usage
     get_sidecar_json_filename,
     save_json_file
 )
+
+# Import VRAM utility for dynamic resolution cap
+from dependency.stereocrafter_util import get_current_vram_usage
 # --- END MODIFIED IMPORTS ---
 
 try:
@@ -60,13 +60,14 @@ _ENABLE_XFORMERS_ATTENTION = True # Set to True or False to enable/disable xForm
 
 class DepthCrafterDemo:
     def __init__(
-        self, 
-        unet_path: str, 
-        pre_train_path: str, 
-        cpu_offload: Union[str, None] = "model", 
-        use_cudnn_benchmark: bool = False, 
-        local_files_only: bool = False, 
-        disable_xformers=False
+        self,
+        unet_path: str,
+        pre_train_path: str,
+        cpu_offload: Union[str, None] = "model",
+        use_cudnn_benchmark: bool = False,
+        local_files_only: bool = False,
+        disable_xformers=False,
+        token: Optional[str] = None
     ):
         torch.backends.cudnn.benchmark = use_cudnn_benchmark
         try:
@@ -74,13 +75,15 @@ class DepthCrafterDemo:
                 unet_path,
                 low_cpu_mem_usage=True,
                 torch_dtype=torch.float16,
-                local_files_only=local_files_only
+                local_files_only=local_files_only,
+                token=token
             )
             self.pipe = DepthCrafterPipeline.from_pretrained(
                 pre_train_path,
                 unet=unet,
                 torch_dtype=torch.float16,
-                local_files_only=local_files_only
+                local_files_only=local_files_only,
+                token=token
             )
             # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
             
@@ -232,17 +235,17 @@ class DepthCrafterDemo:
             free_vram = vram_info.get('free_gb', total_vram)
             free_percentage = free_vram / total_vram if total_vram > 0 else 0
             effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.2
-                # Set max_res based on effective VRAM tiers
-                if effective_vram < 8:
-                    max_res = 512
-                elif effective_vram < 12:
-                    max_res = 768
-                elif effective_vram < 24:
-                    max_res = 1024
-                elif effective_vram < 48:
-                    max_res = 1024  # Conservative for 24-48GB
-                else:
-                    max_res = 1536  # Allow higher for 48GB+ GPUs, model may support up to 1536
+            # Set max_res based on effective VRAM tiers
+            if effective_vram < 8:
+                max_res = 512
+            elif effective_vram < 12:
+                max_res = 768
+            elif effective_vram < 24:
+                max_res = 1024
+            elif effective_vram < 48:
+                max_res = 1024  # Conservative for 24-48GB
+            else:
+                max_res = 1536  # Allow higher for 48GB+ GPUs, model may support up to 1536
         except Exception as e:
             _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
             max_res = 1024

@@ -209,6 +209,19 @@ echo "  Access URL: http://0.0.0.0:7860"
 echo "  Or use the Runpod provided URL"
 echo ""
 
+# Start File Manager (filebrowser) in background
+echo "Starting File Manager..."
+mkdir -p /app  # For database
+if [ ! -f /usr/local/bin/filebrowser ]; then
+    echo "Downloading filebrowser..."
+    wget -q https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz
+    tar -xzf linux-amd64-filebrowser.tar.gz
+    mv filebrowser /usr/local/bin/
+    chmod +x /usr/local/bin/filebrowser
+fi
+/usr/local/bin/filebrowser --config /config/settings.json &
+echo "File Manager started on port 80"
+
 # Start the application (this should keep running)
 echo "Launching webui.py..."
 python webui.py --share --server-name 0.0.0.0 --server-port 7860

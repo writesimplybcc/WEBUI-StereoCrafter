@@ -47,7 +47,8 @@ def load_inpainting_pipeline_hf(
     unet_path: str,
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
-    offload_type: str = "model"
+    offload_type: str = "model",
+    token: Optional[str] = None
 ) -> StableVideoDiffusionInpaintingPipeline:
     """
     Load inpainting pipeline from HuggingFace.
@@ -65,20 +66,24 @@ def load_inpainting_pipeline_hf(
             subfolder="image_encoder",
             variant="fp16",
             torch_dtype=dtype,
+            token=token,
         )
         vae = AutoencoderKLTemporalDecoder.from_pretrained(
             svd_path,
             subfolder="vae",
             variant="fp16",
             torch_dtype=dtype,
+            token=token,
         )
         feature_extractor = CLIPImageProcessor.from_pretrained(
             svd_path,
-            subfolder="feature_extractor"
+            subfolder="feature_extractor",
+            token=token,
         )
         scheduler = EulerDiscreteScheduler.from_pretrained(
             svd_path,
-            subfolder="scheduler"
+            subfolder="scheduler",
+            token=token,
         )
         
         # UNet from DepthCrafter
@@ -87,6 +92,7 @@ def load_inpainting_pipeline_hf(
             unet_path,
             low_cpu_mem_usage=True,
             torch_dtype=dtype,
+            token=token,
         )
         
         image_encoder.requires_grad_(False)
@@ -164,7 +170,8 @@ def load_inpainting_pipeline_local(
     unet_path: str,
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
-    offload_type: str = "model"
+    offload_type: str = "model",
+    token: Optional[str] = None
 ) -> StableVideoDiffusionInpaintingPipeline:
     """
     Load inpainting pipeline from local weights folder.
@@ -185,7 +192,8 @@ def load_inpainting_pipeline_local(
             unet_path="tencent/DepthCrafter",
             device=device,
             dtype=dtype,
-            offload_type=offload_type
+            offload_type=offload_type,
+            token=token
         )
 
     # Load components from local paths
@@ -198,18 +206,21 @@ def load_inpainting_pipeline_local(
             subfolder="image_encoder",
             variant="fp16",
             torch_dtype=dtype,
+            token=token,
         )
         vae = AutoencoderKLTemporalDecoder.from_pretrained(
             svd_path,
             subfolder="vae",
             variant="fp16",
             torch_dtype=dtype,
+            token=token,
         )
         # Load UNet directly from StereoCrafter root (no unet_diffusers subfolder in HF repo)
         unet = UNetSpatioTemporalConditionModel.from_pretrained(
             unet_path,
             low_cpu_mem_usage=True,
             torch_dtype=dtype,
+            token=token,
         )
 
         image_encoder.requires_grad_(False)
@@ -300,7 +311,8 @@ def load_inpainting_pipeline_local(
             unet_path="tencent/DepthCrafter",
             device=device,
             dtype=dtype,
-            offload_type=offload_type
+            offload_type=offload_type,
+            token=token
         )
 from dependency.stereocrafter_util import (
     get_video_stream_info, draw_progress_bar,
@@ -570,11 +582,12 @@ class InpaintingWebUI:
                 config.get('mask_blur_kernel_size', 10),
                 config.get('enable_post_inpainting_blend', False),
                 config.get('enable_color_transfer', True),
+                config.get('hf_token', ''),
                 "✓ Configuration loaded successfully"
             )
         except Exception as e:
             # Return current values on error
-            return tuple([None] * 18 + [f"✗ Failed to load config: {e}"])
+            return tuple([None] * 19 + [f"✗ Failed to load config: {e}"])
     
     def reset_to_defaults(self):
         """Reset all parameters to default values (VRAM-aware)"""
@@ -597,6 +610,7 @@ class InpaintingWebUI:
             10,  # mask_blur_kernel_size
             False,  # enable_post_inpainting_blend
             True,  # enable_color_transfer
+            '',  # hf_token
             "✓ Reset to default values"
         )
 
@@ -741,7 +755,16 @@ class InpaintingWebUI:
                     label="Progress (%)", interactive=False
                 )
                 batch_progress = gr.Textbox(label="Batch Progress", value="0/0", interactive=False)
-            
+
+            # Hugging Face Authentication
+            with gr.Group():
+                gr.Markdown("### Hugging Face Authentication")
+                hf_token = gr.Textbox(
+                    label="Hugging Face Token",
+                    value=os.environ.get("HF_TOKEN", ""),
+                    info="Enter your Hugging Face access token for downloading gated models like Stable Video Diffusion."
+                )
+
             # Control Buttons
             with gr.Row():
                 start_button = gr.Button("Start", variant="primary")
@@ -790,7 +813,7 @@ class InpaintingWebUI:
                 original_input_blend_strength, output_crf, process_length, offload_type,
                 mask_initial_threshold, mask_morph_kernel_size,
                 mask_dilate_kernel_size, mask_blur_kernel_size,
-                enable_post_inpainting_blend, enable_color_transfer
+                enable_post_inpainting_blend, enable_color_transfer, hf_token
             ]
             
             # All output components
@@ -819,9 +842,10 @@ class InpaintingWebUI:
                     "tile_num": int(args[5]), "frames_chunk": int(args[6]),
                     "frame_overlap": int(args[7]), "original_input_blend_strength": float(args[8]),
                     "output_crf": int(args[9]), "process_length": int(args[10]), "offload_type": args[11],
-                    "mask_initial_threshold": float(args[11]), "mask_morph_kernel_size": float(args[12]),
-                    "mask_dilate_kernel_size": float(args[13]), "mask_blur_kernel_size": float(args[14]),
-                    "enable_post_inpainting_blend": args[15], "enable_color_transfer": args[16]
+                    "mask_initial_threshold": float(args[12]), "mask_morph_kernel_size": float(args[13]),
+                    "mask_dilate_kernel_size": float(args[14]), "mask_blur_kernel_size": float(args[15]),
+                    "enable_post_inpainting_blend": args[16], "enable_color_transfer": args[17],
+                    "hf_token": args[18]
                 }),
                 inputs=all_params,
                 outputs=[status_label]
@@ -835,7 +859,7 @@ class InpaintingWebUI:
                         original_input_blend_strength, output_crf, process_length, offload_type,
                         mask_initial_threshold, mask_morph_kernel_size,
                         mask_dilate_kernel_size, mask_blur_kernel_size,
-                        enable_post_inpainting_blend, enable_color_transfer, status_label]
+                        enable_post_inpainting_blend, enable_color_transfer, hf_token, status_label]
             )
             
             # Reset to defaults
@@ -846,7 +870,7 @@ class InpaintingWebUI:
                         original_input_blend_strength, output_crf, process_length, offload_type,
                         mask_initial_threshold, mask_morph_kernel_size,
                         mask_dilate_kernel_size, mask_blur_kernel_size,
-                        enable_post_inpainting_blend, enable_color_transfer, status_label]
+                        enable_post_inpainting_blend, enable_color_transfer, hf_token, status_label]
             )
 
         return interface
@@ -879,7 +903,7 @@ class InpaintingWebUI:
          original_input_blend_strength, output_crf, process_length, offload_type,
          mask_initial_threshold, mask_morph_kernel_size,
          mask_dilate_kernel_size, mask_blur_kernel_size,
-         enable_post_inpainting_blend, enable_color_transfer) = args
+         enable_post_inpainting_blend, enable_color_transfer, hf_token) = args
 
         # Validate
         try:
@@ -1054,7 +1078,8 @@ class InpaintingWebUI:
                 unet_path=unet_path,
                 device="cuda",
                 dtype=torch.float16,
-                offload_type=params['offload_type']
+                offload_type=params['offload_type'],
+                token=hf_token if hf_token else None
             )
 
             # Find videos

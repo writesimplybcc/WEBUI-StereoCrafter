@@ -265,6 +265,11 @@ class DepthCrafterWebUI(BaseWebUI):
         self.is_depth_far_black = gr.Checkbox(label="Is Depth Far Black", value=True)
         self.dark_mode_var = gr.Checkbox(label="Dark Mode", value=False)
         self.disable_xformers_var = gr.Checkbox(label="Disable xFormers (VRAM Save)", value=True)
+        self.hf_token = gr.Textbox(
+            label="Hugging Face Token",
+            value=os.environ.get("HF_TOKEN", ""),
+            info="Enter your Hugging Face access token for downloading gated models. Leave empty if using local models only."
+        )
         
         # Status and progress
         self.status_message_var = gr.Textbox(label="Status", value="Ready")
@@ -346,6 +351,11 @@ class DepthCrafterWebUI(BaseWebUI):
                         self.robust_norm_high_percentile.render()
                     self.robust_output_suffix.render()
 
+        # Hugging Face Authentication
+        with gr.Group():
+            gr.Markdown("### Hugging Face Authentication")
+            self.hf_token.render()
+
         # Controls Section
         with gr.Group():
             gr.Markdown("### Controls")
@@ -409,7 +419,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
                 self.robust_norm_high_percentile, self.robust_norm_output_min,
                 self.robust_norm_output_max, self.robust_output_suffix,
-                self.is_depth_far_black, self.disable_xformers_var
+                self.is_depth_far_black, self.disable_xformers_var, self.hf_token
             ],
             outputs=[self.status_message_var, self.progress]
         )
@@ -460,7 +470,7 @@ class DepthCrafterWebUI(BaseWebUI):
             self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
             self.robust_norm_high_percentile, self.robust_norm_output_min,
             self.robust_norm_output_max, self.robust_output_suffix,
-            self.is_depth_far_black, self.disable_xformers_var,
+            self.is_depth_far_black, self.disable_xformers_var, self.hf_token,
             self.progress, self.status_message_var
         ]
 
@@ -486,7 +496,7 @@ class DepthCrafterWebUI(BaseWebUI):
          enable_dual_output_robust_norm, robust_norm_low_percentile,
          robust_norm_high_percentile, robust_norm_output_min,
          robust_norm_output_max, robust_output_suffix,
-         is_depth_far_black, disable_xformers) = args
+         is_depth_far_black, disable_xformers, hf_token) = args
 
         try:
             # Parameter validation and type conversion
@@ -563,6 +573,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 use_cudnn_benchmark=use_cudnn_benchmark,
                 local_files_only=use_local_models_only,
                 disable_xformers=disable_xformers,
+                token=hf_token if hf_token else None,
             )
 
             # Set PyTorch CUDA memory config to reduce fragmentation

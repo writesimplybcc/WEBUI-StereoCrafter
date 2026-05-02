@@ -3,6 +3,7 @@
 services:
   stereocrafter:
     build: .
+    working_dir: /workspace/WEBUI-StereoCrafter
     ports:
       - "7860:7860"
     volumes:
@@ -39,7 +40,5 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["filebrowser --config /config/settings.json"]
     restart: unless-stopped
-    depends_on:
-      - stereocrafter
 
 # volumes:

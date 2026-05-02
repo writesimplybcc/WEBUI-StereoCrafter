@@ -2648,7 +2648,7 @@ class SplatterWebUI:
             # Final progress update
             progress(1.0, desc="✅ Processing completed!")
             logger.info(f"✅ Batch processing completed. Total tasks: {overall_task_counter}")
-            
+
             # Update status label via thread-safe method
             try:
                 # Write completion status to a file that UI can check
@@ -2659,6 +2659,10 @@ class SplatterWebUI:
             except Exception as status_err:
                 logger.warning(f"Could not write status file: {status_err}")
 
+            # Yield completion status and reset UI
+            yield "Processing completed", 100, 100, "", ""
+            yield "Ready", 0, 0, "", ""
+
         except Exception as e:
             logger.error(f"An unexpected error occurred during batch processing: {e}", exc_info=True)
             # Write error status
@@ -2668,8 +2672,8 @@ class SplatterWebUI:
                     f.write(f"error:{str(e)}")
             except:
                 pass
-            # Return error status to UI (only works if not in thread)
-            return f"❌ Error: {str(e)}", 0
+            # Yield error status to UI
+            yield f"❌ Error: {str(e)}", 0, 0, "", ""
         finally:
             release_cuda_memory()
             # Write final status
