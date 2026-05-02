@@ -948,7 +948,8 @@ class InpaintingWebUI:
             'mask_dilate_kernel_size': mask_dilate_kernel_size,
             'mask_blur_kernel_size': mask_blur_kernel_size,
             'enable_post_inpainting_blend': enable_post_inpainting_blend,
-            'enable_color_transfer': enable_color_transfer
+            'enable_color_transfer': enable_color_transfer,
+            'hf_token': hf_token
         }
 
         # Start processing thread
@@ -1079,7 +1080,7 @@ class InpaintingWebUI:
                 device="cuda",
                 dtype=torch.float16,
                 offload_type=params['offload_type'],
-                token=hf_token if hf_token else None
+                token=params['hf_token'] if params['hf_token'] else None
             )
 
             # Find videos
