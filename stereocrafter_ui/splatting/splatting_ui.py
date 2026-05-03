@@ -785,7 +785,10 @@ class SplatterWebUI:
                     os.environ.pop('FORCE_CPU_ENCODING', None)
                     return False
         
-        logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
+            logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
+
+            # Reset success flag for this attempt
+            encoding_successful = True
 
         # --- Determine max_expected_raw_value for consistent Gamma ---
         max_expected_raw_value = 1.0
@@ -1083,14 +1086,24 @@ class SplatterWebUI:
                     logger.debug(f"FFmpeg stderr log:\n{stderr_output.decode('utf-8', errors='replace')}")
         
         if not encoding_successful:
-            # Delete temporary file on failure to prevent corrupted files
-            if os.path.exists(temp_output_path):
-                try:
-                    os.remove(temp_output_path)
-                    logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to delete temp file {temp_output_path}: {cleanup_err}")
-            return False
+            if not force_cpu:
+                force_cpu = True
+                # Kill FFmpeg if running
+                if ffmpeg_process and ffmpeg_process.poll() is None:
+                    ffmpeg_process.terminate()
+                # Reset readers to start over
+                input_video_reader.seek(0)
+                depth_map_reader.seek(0)
+                continue
+            else:
+                # Delete temporary file on failure to prevent corrupted files
+                if os.path.exists(temp_output_path):
+                    try:
+                        os.remove(temp_output_path)
+                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to delete temp file {temp_output_path}: {cleanup_err}")
+                return False
         
         # Rename temp file to final path on success
         try:
