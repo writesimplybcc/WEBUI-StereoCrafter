@@ -988,8 +988,8 @@ class SplatterWebUI:
                         encoding_successful = False
                         break
 
-                    video_grid_uint16 = (np.clip(video_grid, 0.0, 1.0) * 65535.0).astype(np.uint16)
-                    video_grid_bgr = cv2.cvtColor(video_grid_uint16, cv2.COLOR_RGB2BGR)
+                    video_grid_uint8 = (np.clip(video_grid, 0.0, 1.0) * 255.0).astype(np.uint8)
+                    video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
 
                     # --- SEND FRAME TO FFMPEG PIPE ---
                     try:
