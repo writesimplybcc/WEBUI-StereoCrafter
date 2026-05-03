@@ -756,8 +756,11 @@ class SplatterWebUI:
         
         # Use temporary file during encoding to prevent corrupted files on failure
         # Insert .tmp before the .mp4 extension so FFmpeg recognizes the format
-        temp_output_path = final_output_video_path.replace(".mp4", ".temp.mp4")
-        
+        temp_output_path = final_output_mp4_path.replace(".mp4", ".temp.mp4")
+
+        # Force CPU encoding for splatting to avoid NVENC issues
+        os.environ['FORCE_CPU_ENCODING'] = '1'
+
         ffmpeg_process = start_ffmpeg_pipe_process(
             content_width=grid_width,
             content_height=grid_height,
@@ -769,6 +772,7 @@ class SplatterWebUI:
         )
         if ffmpeg_process is None:
             logger.error("Failed to start FFmpeg pipe. Aborting splatting task.")
+            os.environ.pop('FORCE_CPU_ENCODING', None)
             return False
         
         logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
@@ -1123,7 +1127,9 @@ class SplatterWebUI:
                 logger.debug("Skipping output sidecar creation: frame_overlap and input_bias are zero.")
         else:
             logger.debug("Skipping output sidecar creation: High-resolution output does not require spsidecar.")
-                    
+
+        # Reset CPU encoding flag
+        os.environ.pop('FORCE_CPU_ENCODING', None)
         return True
 
     def _determine_auto_convergence(self, depth_map_path: str, total_frames_to_process: int, batch_size: int, fallback_value: float) -> Tuple[float, float]:
