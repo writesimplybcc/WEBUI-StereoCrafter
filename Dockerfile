@@ -13,7 +13,7 @@ WORKDIR /workspace/WEBUI-StereoCrafter
 # Core files
 COPY webui.py .
 COPY requirements-docker.txt .
-COPY "WEBUI StereoCrafter GPU Presets Guide.md" .
+COPY WEBUI\ StereoCrafter\ GPU\ Presets\ Guide.md .
 
 
 # Your WEBUI folders
