@@ -756,24 +756,34 @@ class SplatterWebUI:
         
         # Use temporary file during encoding to prevent corrupted files on failure
         # Insert .tmp before the .mp4 extension so FFmpeg recognizes the format
-        temp_output_path = final_output_mp4_path.replace(".mp4", ".temp.mp4")
+        temp_output_path = final_output_video_path.replace(".mp4", ".temp.mp4")
 
-        # Force CPU encoding for splatting to avoid NVENC issues
-        os.environ['FORCE_CPU_ENCODING'] = '1'
+        # Try GPU encoding first, fallback to CPU if fails
+        force_cpu = False
+        while True:
+            if force_cpu:
+                os.environ['FORCE_CPU_ENCODING'] = '1'
+                logger.info("Retrying FFmpeg with CPU encoding")
+            else:
+                os.environ.pop('FORCE_CPU_ENCODING', None)
 
-        ffmpeg_process = start_ffmpeg_pipe_process(
-            content_width=grid_width,
-            content_height=grid_height,
-            final_output_mp4_path=temp_output_path,  # Write to temp file first
-            fps=processed_fps,
-            video_stream_info=video_stream_info,
-            user_output_crf=user_output_crf,
-            output_format_str="splatted_grid" # Pass a placeholder for the new argument
-        )
-        if ffmpeg_process is None:
-            logger.error("Failed to start FFmpeg pipe. Aborting splatting task.")
-            os.environ.pop('FORCE_CPU_ENCODING', None)
-            return False
+            ffmpeg_process = start_ffmpeg_pipe_process(
+                content_width=grid_width,
+                content_height=grid_height,
+                final_output_mp4_path=temp_output_path,  # Write to temp file first
+                fps=processed_fps,
+                video_stream_info=video_stream_info,
+                user_output_crf=user_output_crf,
+                output_format_str="splatted_grid" # Pass a placeholder for the new argument
+            )
+            if ffmpeg_process is None:
+                if not force_cpu:
+                    force_cpu = True
+                    continue
+                else:
+                    logger.error("Failed to start FFmpeg pipe even with CPU. Aborting splatting task.")
+                    os.environ.pop('FORCE_CPU_ENCODING', None)
+                    return False
         
         logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
 
@@ -1128,9 +1138,23 @@ class SplatterWebUI:
         else:
             logger.debug("Skipping output sidecar creation: High-resolution output does not require spsidecar.")
 
-        # Reset CPU encoding flag
-        os.environ.pop('FORCE_CPU_ENCODING', None)
-        return True
+        if encoding_successful:
+            break
+        elif not force_cpu:
+            force_cpu = True
+            # Kill FFmpeg if running
+            if ffmpeg_process and ffmpeg_process.poll() is None:
+                ffmpeg_process.terminate()
+            # Reset readers to start over
+            input_video_reader.seek(0)
+            depth_map_reader.seek(0)
+            continue
+        else:
+            break
+
+# After the while loop
+os.environ.pop('FORCE_CPU_ENCODING', None)
+return encoding_successful
 
     def _determine_auto_convergence(self, depth_map_path: str, total_frames_to_process: int, batch_size: int, fallback_value: float) -> Tuple[float, float]:
         """
