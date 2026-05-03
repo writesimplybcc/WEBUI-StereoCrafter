@@ -9,6 +9,10 @@ FROM johnsdoes/stereocrafter-webui:base
 # ============================================================
 WORKDIR /workspace/WEBUI-StereoCrafter
 
+# Accept HF_TOKEN as build arg for flexibility on cloud services
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
 # Copy ALL your code (this replaces/adds to the base StereoCrafter files)
 # Core files
 COPY webui.py .
