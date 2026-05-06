@@ -244,8 +244,10 @@ class DepthCrafterDemo:
                 max_res = 1024
             elif effective_vram < 48:
                 max_res = 1024  # Conservative for 24-48GB
+            elif effective_vram < 96:
+                max_res = 2048  # Higher for 48-96GB GPUs like RTX 6000 Ada/Pro
             else:
-                max_res = 1536  # Allow higher for 48GB+ GPUs, model may support up to 1536
+                max_res = 4096  # Very high for 96GB+ GPUs
         except Exception as e:
             _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
             max_res = 1024

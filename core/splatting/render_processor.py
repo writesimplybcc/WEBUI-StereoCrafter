@@ -226,10 +226,10 @@ class RenderProcessor:
             # --- NEW: Start threads to read FFmpeg output to prevent deadlock ---
             if ffmpeg_process:
                 stdout_thread = threading.Thread(
-                    target=self._read_ffmpeg_output, args=(ffmpeg_process.stdout, logging.DEBUG), daemon=True
+                    target=self._read_ffmpeg_output, args=(ffmpeg_process.stdout, logging.WARNING), daemon=True
                 )
                 stderr_thread = threading.Thread(
-                    target=self._read_ffmpeg_output, args=(ffmpeg_process.stderr, logging.INFO), daemon=True
+                    target=self._read_ffmpeg_output, args=(ffmpeg_process.stderr, logging.DEBUG), daemon=True
                 )
                 stdout_thread.start()
                 stderr_thread.start()
@@ -632,16 +632,34 @@ class RenderProcessor:
         self.progress_queue.put(("diagnostic_capture", {"grid": grid, "task_name": task_name}))
 
     def _write_to_ffmpeg(self, process: Any, batch_results: List[dict], dual_output: bool):
-        for res in batch_results:
+        for frame_idx, res in enumerate(batch_results):
+            if process.poll() is not None:
+                logger.error(f"FFmpeg process has exited (return code: {process.returncode}) before writing frame {frame_idx}. Aborting.")
+                raise BrokenPipeError("FFmpeg process exited unexpectedly")
             grid = self._construct_grid(res, dual_output)
             # Convert to 16-bit and BGR for FFmpeg
             grid_uint16 = (np.clip(grid, 0.0, 1.0) * 65535.0).astype(np.uint16)
             grid_bgr = cv2.cvtColor(grid_uint16, cv2.COLOR_RGB2BGR)
-            process.stdin.write(grid_bgr.tobytes())
+            frame_data = grid_bgr.tobytes()
+            try:
+                # Write data in chunks to ensure complete transmission
+                bytes_written = 0
+                while bytes_written < len(frame_data):
+                    chunk = frame_data[bytes_written:bytes_written + 65536]  # Write in 64KB chunks
+                    process.stdin.write(chunk)
+                    bytes_written += len(chunk)
+                process.stdin.flush()  # Ensure data is sent immediately
+                logger.debug(f"Successfully wrote frame {frame_idx} ({len(frame_data)} bytes) to FFmpeg")
+            except BrokenPipeError as e:
+                logger.error(f"Broken pipe while writing frame {frame_idx} to FFmpeg. FFmpeg may have crashed.")
+                raise e
 
     def _write_split_to_ffmpeg(self, mask_process: Any, splat_process: Any, batch_results: List[dict]):
         """Write mask + splat as separate full-res files (used by DNxHR split mode)."""
-        for res in batch_results:
+        for frame_idx, res in enumerate(batch_results):
+            if mask_process.poll() is not None or splat_process.poll() is not None:
+                logger.error(f"FFmpeg processes have exited (mask: {mask_process.returncode}, splat: {splat_process.returncode}) before writing frame {frame_idx}. Aborting.")
+                raise BrokenPipeError("FFmpeg processes exited unexpectedly")
             occlusion = res["occlusion"]
             right = res["right"]
 
@@ -654,8 +672,29 @@ class RenderProcessor:
             occl_bgr = cv2.cvtColor(occl_u16, cv2.COLOR_RGB2BGR)
             right_bgr = cv2.cvtColor(right_u16, cv2.COLOR_RGB2BGR)
 
-            mask_process.stdin.write(occl_bgr.tobytes())
-            splat_process.stdin.write(right_bgr.tobytes())
+            occl_data = occl_bgr.tobytes()
+            right_data = right_bgr.tobytes()
+            try:
+                # Write mask data in chunks
+                bytes_written = 0
+                while bytes_written < len(occl_data):
+                    chunk = occl_data[bytes_written:bytes_written + 65536]
+                    mask_process.stdin.write(chunk)
+                    bytes_written += len(chunk)
+                mask_process.stdin.flush()
+
+                # Write splat data in chunks
+                bytes_written = 0
+                while bytes_written < len(right_data):
+                    chunk = right_data[bytes_written:bytes_written + 65536]
+                    splat_process.stdin.write(chunk)
+                    bytes_written += len(chunk)
+                splat_process.stdin.flush()
+
+                logger.debug(f"Successfully wrote split frame {frame_idx} to FFmpeg")
+            except BrokenPipeError as e:
+                logger.error(f"Broken pipe while writing split frame {frame_idx} to FFmpeg. FFmpeg may have crashed.")
+                raise e
 
     def _construct_grid(self, res: dict, dual_output: bool) -> np.ndarray:
         """Construct output grid for encoding.

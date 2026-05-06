@@ -19,10 +19,37 @@ import logging
 from typing import Optional, Tuple, Optional, Dict, Any, List
 from PIL import Image
 import math
-from gui.config import APP_CONFIG_DEFAULTS, GUI_VERSION
-from gui.sidecar import FusionSidecarGenerator
-from gui.warp import ForwardWarpStereo
-from gui.utils import VideoFileClip
+
+# Import custom modules
+CUDA_AVAILABLE = False # start state, will check automaticly later
+
+try:
+    from moviepy.editor import VideoFileClip
+except ImportError:
+    # Fallback/stub for systems without moviepy
+    class VideoFileClip:
+        def __init__(self, *args, **kwargs):
+            logging.warning("moviepy.editor not found. Frame counting disabled.")
+        def close(self): pass
+        @property
+        def fps(self): return None
+        @property
+        def duration(self): return None
+
+from dependency.stereocrafter_util import (
+    Tooltip, logger, get_video_stream_info, draw_progress_bar,
+    check_cuda_availability, release_cuda_memory, CUDA_AVAILABLE, set_util_logger_level,
+    start_ffmpeg_pipe_process, custom_blur, custom_dilate,
+    create_single_slider_with_label_updater, create_dual_slider_layout,
+    SidecarConfigManager, apply_dubois_anaglyph, apply_optimized_anaglyph
+)
+try:
+    from Forward_Warp import forward_warp
+    logger.info("CUDA Forward Warp is available.")
+except:
+    from dependency.forward_warp_pytorch import forward_warp
+    logger.info("Forward Warp Pytorch is active.")
+from dependency.video_previewer import VideoPreviewer
 
 # Import custom modules
 CUDA_AVAILABLE = False # start state, will check automaticly later
@@ -70,10 +97,256 @@ except ImportError:
     CORE_MODULES_AVAILABLE = False
     logger.warning("Core modules not available. Some advanced features will be disabled.")
 
+GUI_VERSION = "25-11-26.2"
+
+class FusionSidecarGenerator:
+    """Handles parsing Fusion Export files, matching them to depth maps,
+    and generating/saving FSSIDECAR files using carry-forward logic."""
+
+    FUSION_PARAMETER_CONFIG = {
+        # Key: {Label, Type, Default, FusionKey(fsexport), SidecarKey(fssidecar), Decimals}
+        "convergence": {
+            "label": "Convergence Plane", "type": float, "default": 0.5,
+            "fusion_key": "Convergence", "sidecar_key": "convergence_plane", "decimals": 3
+        },
+        "max_disparity": {
+            "label": "Max Disparity", "type": float, "default": 35.0,
+            "fusion_key": "MaxDisparity", "sidecar_key": "max_disparity", "decimals": 1
+        },
+        "gamma": {
+            "label": "Gamma Correction", "type": float, "default": 1.0,
+            "fusion_key": "FrontGamma", "sidecar_key": "gamma", "decimals": 2
+        },
+        # These keys exist in the sidecar manager but are usually set in the source tool
+        # We include them here for completeness if Fusion ever exported them
+        "frame_overlap": {
+            "label": "Frame Overlap", "type": float, "default": 3,
+            "fusion_key": "Overlap", "sidecar_key": "frame_overlap", "decimals": 0
+        },
+        "input_bias": {
+            "label": "Input Bias", "type": float, "default": 0.0,
+            "fusion_key": "Bias", "sidecar_key": "input_bias", "decimals": 2
+        }
+    }
+
+    def __init__(self, master_gui, sidecar_manager):
+        self.master_gui = master_gui
+        self.sidecar_manager = sidecar_manager
+        self.logger = logging.getLogger(__name__)
+
+    def _get_video_frame_count(self, file_path):
+        """Safely gets the frame count of a video file using moviepy."""
+        try:
+            clip = VideoFileClip(file_path)
+            fps = clip.fps
+            duration = clip.duration
+            if fps is None or duration is None:
+                # If moviepy failed to get reliable info, fall back
+                fps = 24
+                if duration is None: return 0
+
+            frames = math.ceil(duration * fps)
+            clip.close()
+            return frames
+        except Exception as e:
+            self.logger.warning(f"Error getting frame count for {os.path.basename(file_path)}: {e}")
+            return 0
+
+    def _load_and_validate_fsexport(self, file_path):
+        """Loads, parses, and validates marker data from a Fusion Export file."""
+        try:
+            with open(file_path, 'r') as f:
+                export_data = json.load(f)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse JSON in {os.path.basename(file_path)}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to read {os.path.basename(file_path)}: {e}")
+            return None
+
+        markers = export_data.get("markers", [])
+        if not markers:
+            self.logger.warning("No 'markers' found in the export file.")
+            return None
+
+        # Sort markers by frame number (critical for carry-forward logic)
+        markers.sort(key=lambda m: m['frame'])
+        self.logger.info(f"Loaded {len(markers)} markers from {os.path.basename(file_path)}.")
+        return markers
+
+    def _scan_target_videos(self, folder):
+        """Scans the target folder for video files and computes their frame counts."""
+        video_extensions = ('*.mp4', '*.avi', '*.mov', '*.mkv')
+        found_files_paths = []
+        for ext in video_extensions:
+            found_files_paths.extend(glob.glob(os.path.join(folder, ext)))
+        sorted_files_paths = sorted(found_files_paths)
+
+        if not sorted_files_paths:
+            self.logger.warning(f"No video depth map files found in: {folder}")
+            return None
+
+        target_video_data = []
+        cumulative_frames = 0
+
+        for full_path in sorted_files_paths:
+            total_frames = self._get_video_frame_count(full_path)
+
+            if total_frames == 0:
+                self.logger.warning(f"Skipping {os.path.basename(full_path)} due to zero frame count.")
+                continue
+
+            target_video_data.append({
+                "full_path": full_path,
+                "basename": os.path.basename(full_path),
+                "total_frames": total_frames,
+                "timeline_start_frame": cumulative_frames,
+                "timeline_end_frame": cumulative_frames + total_frames - 1,
+            })
+            cumulative_frames += total_frames
+
+        self.logger.info(f"Scanned {len(target_video_data)} video files. Total timeline frames: {cumulative_frames}.")
+        return target_video_data
+
+    def generate_sidecars(self, export_file_path, target_folder):
+        """Main entry point for the Fusion Export to Sidecar generation workflow."""
+
+        markers = self._load_and_validate_fsexport(export_file_path)
+        if markers is None:
+            return "Fusion export loading failed."
+
+        target_videos = self._scan_target_videos(target_folder)
+        if target_videos is None or not target_videos:
+            return "No valid depth map videos found."
+
+        # 3. Apply Parameters (Carry-Forward Logic)
+        applied_count = 0
+
+        # Initialize last known values with the config defaults
+        last_param_vals = {}
+        for key, config in self.FUSION_PARAMETER_CONFIG.items():
+             last_param_vals[key] = config["default"]
+
+        for file_data in target_videos:
+            file_start_frame = file_data["timeline_start_frame"]
+
+            # Find the most relevant marker (latest marker frame <= file_start_frame)
+            relevant_marker = None
+            for marker in markers:
+                if marker['frame'] <= file_start_frame:
+                    relevant_marker = marker
+                else:
+                    break
+
+            current_param_vals = last_param_vals.copy()
+
+            if relevant_marker and relevant_marker.get('values'):
+                marker_values = relevant_marker['values']
+                updated_from_marker = False
+
+                for key, config in self.FUSION_PARAMETER_CONFIG.items():
+                    fusion_key = config["fusion_key"]
+                    default_val = config["default"]
+
+                    if fusion_key in marker_values:
+                        # Attempt to cast the value from the marker to the expected type
+                        val = marker_values.get(fusion_key, default_val)
+                        try:
+                            current_param_vals[key] = config["type"](val)
+                            updated_from_marker = True
+                        except (ValueError, TypeError):
+                            self.logger.warning(f"Marker value for '{fusion_key}' is invalid ({val}). Using previous/default value.")
+
+                if updated_from_marker:
+                    applied_count += 1
+
+            # 4. Save Sidecar JSON
+            sidecar_data = {}
+            for key, config in self.FUSION_PARAMETER_CONFIG.items():
+                value = current_param_vals[key]
+                # Round to configured decimals for clean sidecar output
+                sidecar_data[config["sidecar_key"]] = round(value, config["decimals"])
+
+            base_name_without_ext = os.path.splitext(file_data["full_path"])[0]
+            json_filename = base_name_without_ext + ".fssidecar" # Target sidecar extension
+
+            if not self.sidecar_manager.save_sidecar_data(json_filename, sidecar_data):
+                self.logger.error(f"Failed to save sidecar for {file_data['basename']}.")
+
+            # Update last values for carry-forward to the next file
+            last_param_vals = current_param_vals.copy()
+
+        # 5. Final Status
+        if applied_count == 0:
+            message = "Finished: No parameters were applied from the export file."
+        else:
+            message = f"Finished: Applied markers to {applied_count} files, generated {len(target_videos)} FSSIDECARs."
+        return message
+
+class ForwardWarpStereo(nn.Module):
+    """
+    PyTorch module for forward warping an image based on a disparity map.
+    """
+    def __init__(self, eps=1e-6, occlu_map=False):
+        super(ForwardWarpStereo, self).__init__()
+        self.eps = eps
+        self.occlu_map = occlu_map
+        self.fw = forward_warp()
+
+    def forward(self, im, disp):
+        im = im.contiguous()
+        disp = disp.contiguous()
+        weights_map = disp - disp.min()
+        weights_map = (1.414) ** weights_map
+        flow = -disp.squeeze(1)
+        dummy_flow = torch.zeros_like(flow, requires_grad=False)
+        flow = torch.stack((flow, dummy_flow), dim=-1)
+        res_accum = self.fw(im * weights_map, flow)
+        mask = self.fw(weights_map, flow)
+        mask.clamp_(min=self.eps)
+        res = res_accum / mask
+        if not self.occlu_map:
+            return res
+        else:
+            ones = torch.ones_like(disp, requires_grad=False)
+            occlu_map = self.fw(ones, flow)
+            occlu_map.clamp_(0.0, 1.0)
+            occlu_map = 1.0 - occlu_map
+            return res, occlu_map
 
 class SplatterWebUI:
     # --- GLOBAL CONFIGURATION DICTIONARY ---
-    APP_CONFIG_DEFAULTS = APP_CONFIG_DEFAULTS
+    APP_CONFIG_DEFAULTS = {
+        # File Extensions
+        "SIDECAR_EXT": ".fssidecar",
+        "OUTPUT_SIDECAR_EXT": ".spsidecar",
+        "DEFAULT_CONFIG_FILENAME": "config_splat.splatcfg",
+
+        # GUI/Processing Defaults (Used for reset/fallback)
+        "MAX_DISP": "30.0",
+        "CONV_POINT": "0.5",
+        "PROC_LENGTH": "-1",
+        "BATCH_SIZE_FULL": "10",
+        "BATCH_SIZE_LOW": "15",
+        "CRF_OUTPUT": "23",
+
+        # Depth Processing Defaults
+        "DEPTH_GAMMA": "1.0",
+        "DEPTH_DILATE_SIZE_X": "3",
+        "DEPTH_DILATE_SIZE_Y": "3",
+        "DEPTH_BLUR_SIZE_X": "5",
+        "DEPTH_BLUR_SIZE_Y": "5",
+
+        # Additional defaults from gradio version
+        "BORDER_WIDTH": "0.0",
+        "BORDER_BIAS": "0.0",
+        "BORDER_MODE": "Off",
+        "AUTO_BORDER_L": "0.0",
+        "AUTO_BORDER_R": "0.0",
+        "DEPTH_DILATE_LEFT": "0",
+        "DEPTH_BLUR_LEFT": "0",
+        "DEPTH_BLUR_LEFT_MIX": "0.5",
+    }
             # ---------------------------------------
             # Maps Sidecar JSON Key to the internal variable key (used in APP_CONFIG_DEFAULTS)
     SIDECAR_KEY_MAP = {
@@ -129,6 +402,7 @@ class SplatterWebUI:
         # Cache: measured (render-time) per-clip max Total(D+P) keyed by signature
         self._dp_total_true_cache = {}
         self._dp_total_true_active_sig = None
+        self.processing = False
         self._dp_total_true_active_val = None
         # Cache: AUTO-PASS CSV rows (optional) keyed by depth_map basename
         self._auto_pass_csv_cache = None
@@ -270,39 +544,6 @@ class SplatterWebUI:
         # --- Debug logging toggle ---
         self._debug_logging_enabled = False
 
-    def _adjust_window_height_for_content(self):
-        """Adjusts the window height to fit the current content, preserving user-set width."""
-        # This is for the web UI, so we don't need to adjust window height
-        pass
-
-    def _auto_converge_worker(self, depth_map_path, process_length, batch_size, fallback_value, mode):
-        """Worker thread for running the Auto-Convergence calculation."""
-        
-        # Run the existing auto-convergence logic (no mode parameter needed now)
-        new_anchor_avg, new_anchor_peak = self._determine_auto_convergence(
-            depth_map_path,
-            process_length,
-            batch_size,
-            fallback_value,
-        )
-        
-        # Use self.after to safely update the GUI from the worker thread
-        # For Gradio, we need to handle this differently
-        self._complete_auto_converge_update(
-            new_anchor_avg, 
-            new_anchor_peak, 
-            fallback_value, 
-            mode # Still pass the current mode to know which value to select immediately
-        )
-
-    def _auto_save_current_sidecar(self):
-        """
-        Saves the current GUI values to the sidecar file without user interaction.
-        Only runs if self.auto_save_sidecar_var is True.
-        """
-        if not self.auto_save_sidecar:
-            return
-            
         self._save_current_sidecar_data(is_auto_save=True)
 
     def _compute_clip_global_depth_stats(self, depth_map_path: str, chunk_size: int = 100) -> Tuple[float, float]:
@@ -741,6 +982,7 @@ class SplatterWebUI:
         num_frames = total_frames_to_process
         height, width = target_output_height, target_output_width
         os.makedirs(os.path.dirname(output_video_path_base), exist_ok=True)
+        print(f"Starting depthSplatting for {os.path.basename(output_video_path_base)}, {num_frames} frames, {height}x{width}")
         
         # --- Determine output grid dimensions and final path ---
         grid_height, grid_width = (height, width * 2) if dual_output else (height * 2, width * 2)
@@ -753,45 +995,30 @@ class SplatterWebUI:
         if grid_width % 2 != 0 or grid_height % 2 != 0:
             logger.error(f"Invalid output dimensions: {grid_width}x{grid_height}. Width and height must be even numbers for codec compatibility.")
             return False
-        
+
         # Use temporary file during encoding to prevent corrupted files on failure
         # Insert .tmp before the .mp4 extension so FFmpeg recognizes the format
         temp_output_path = final_output_video_path.replace(".mp4", ".temp.mp4")
 
-        # Try GPU encoding first, fallback to CPU if fails
-        force_cpu = False
-        while True:
-            if force_cpu:
-                os.environ['FORCE_CPU_ENCODING'] = '1'
-                logger.info("Retrying FFmpeg with CPU encoding")
-            else:
-                os.environ.pop('FORCE_CPU_ENCODING', None)
+        ffmpeg_process = start_ffmpeg_pipe_process(
+            content_width=grid_width,
+            content_height=grid_height,
+            final_output_mp4_path=temp_output_path,  # Write to temp file first
+            fps=processed_fps,
+            video_stream_info=video_stream_info,
+            user_output_crf=user_output_crf,
+            output_format_str="splatted_grid"
+        )
+        if ffmpeg_process is None:
+            logger.error("Failed to start FFmpeg pipe. Aborting splatting task.")
+            return False
 
-            ffmpeg_process = start_ffmpeg_pipe_process(
-                content_width=grid_width,
-                content_height=grid_height,
-                final_output_mp4_path=temp_output_path,  # Write to temp file first
-                fps=processed_fps,
-                video_stream_info=video_stream_info,
-                user_output_crf=user_output_crf,
-                output_format_str="splatted_grid" # Pass a placeholder for the new argument
-            )
-            if ffmpeg_process is None:
-                if not force_cpu:
-                    force_cpu = True
-                    continue
-                else:
-                    logger.error("Failed to start FFmpeg pipe even with CPU. Aborting splatting task.")
-                    os.environ.pop('FORCE_CPU_ENCODING', None)
-                    return False
-        
-            logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
+        logger.info(f"FFmpeg pipe started: {grid_width}x{grid_height} @ {processed_fps} fps, CRF={user_output_crf}, temp file: {os.path.basename(temp_output_path)}")
 
-            # Reset success flag for this attempt
-            encoding_successful = True
+        # Reset success flag for this attempt
+        encoding_successful = True
 
         # --- Determine max_expected_raw_value for consistent Gamma ---
-        max_expected_raw_value = 1.0
         depth_pix_fmt = depth_stream_info.get("pix_fmt") if depth_stream_info else None
         depth_profile = depth_stream_info.get("profile") if depth_stream_info else None
         is_source_10bit = False
@@ -801,25 +1028,24 @@ class SplatterWebUI:
         if is_source_10bit:
             max_expected_raw_value = 1023.0
         elif depth_pix_fmt and ("8" in depth_pix_fmt or depth_pix_fmt in ["yuv420p", "yuv422p", "yuv444p"]):
-             max_expected_raw_value = 255.0
+              max_expected_raw_value = 255.0
         elif isinstance(depth_pix_fmt, str) and "float" in depth_pix_fmt:
             max_expected_raw_value = 1.0
         logger.debug(f"Determined max_expected_raw_value: {max_expected_raw_value:.1f} (Source: {depth_pix_fmt}/{depth_profile})")
 
         frame_count = 0
-        encoding_successful = True # Assume success unless an error occurs
 
         try:
             for i in range(0, num_frames, batch_size):
                 t_start_batch = time.perf_counter() # <--- TIMER START: Total Batch
-                
+
                 # Check if FFmpeg has crashed before processing next batch
                 if ffmpeg_process.poll() is not None:
                     logger.error(f"FFmpeg process terminated unexpectedly at frame {frame_count}/{num_frames}")
                     logger.error(f"FFmpeg return code: {ffmpeg_process.returncode}")
                     encoding_successful = False
                     break
-                    
+
                 if self.stop_event.is_set():
                     logger.warning("Stop event received. Terminating FFmpeg process.")
                     encoding_successful = False
@@ -836,30 +1062,30 @@ class SplatterWebUI:
                 # This often resolves issues where Decord/FFmpeg loses the internal stream position
                 try:
                     # Seek to the first frame of the current batch
-                    depth_map_reader.seek(current_frame_indices[0]) 
+                    depth_map_reader.seek(current_frame_indices[0])
                     # Then read the full batch from that position
                     batch_depth_numpy_raw = depth_map_reader.get_batch(current_frame_indices).asnumpy()
                 except Exception as e:
                     logger.error(f"Error seeking/reading depth map batch starting at index {i}: {e}. Falling back to a potentially blank read.")
                     batch_depth_numpy_raw = depth_map_reader.get_batch(current_frame_indices).asnumpy()
                 t_end_io = time.perf_counter()
-                
-                file_frame_idx = current_frame_indices[0] 
+
+                file_frame_idx = current_frame_indices[0]
                 task_name = "LowRes" if is_low_res_task else "HiRes"
-                
+
                 if batch_depth_numpy_raw.min() == batch_depth_numpy_raw.max() == 0:
                     logger.warning(f"Depth map batch starting at index {i} is entirely blank/zero after read. **Seeking failed to resolve.**")
-                    
+
                 if batch_depth_numpy_raw.min() == batch_depth_numpy_raw.max():
                     logger.warning(f"Depth map batch starting at index {i} is entirely uniform/flat after read. Min/Max: {batch_depth_numpy_raw.min():.2f}")
 
                 # Use the FIRST frame index for the file name (e.g., 00000.png)
-                file_frame_idx = current_frame_indices[0] 
-                
-                # self._save_debug_numpy(batch_depth_numpy_raw, "01_RAW_INPUT", i, file_frame_idx, task_name) 
+                file_frame_idx = current_frame_indices[0]
+
+                # self._save_debug_numpy(batch_depth_numpy_raw, "01_RAW_INPUT", i, file_frame_idx, task_name)
                 # --- TIMER 2: CPU Pre-processing (Dilate, Blur, Grayscale, Gamma, Min/Max Calc) ---
                 t_start_preproc = time.perf_counter()
-                
+
                 batch_depth_numpy = self._process_depth_batch(
                     batch_depth_numpy_raw=batch_depth_numpy_raw,
                     depth_stream_info=depth_stream_info,
@@ -886,22 +1112,23 @@ class SplatterWebUI:
                 if assume_raw_input:
                     if global_depth_max > 1.0:
                         batch_depth_normalized = batch_depth_numpy / global_depth_max
-                else:                    
+                else:
                     depth_range = global_depth_max - global_depth_min
                     if depth_range > 1e-5: # Use a small epsilon to detect non-zero range
                         batch_depth_normalized = (batch_depth_numpy - global_depth_min) / depth_range
                     else:
                         # If range is zero, fill with a neutral value (e.g., 0.5) to prevent NaN/Inf
                         batch_depth_normalized = np.full_like(batch_depth_numpy, fill_value=zero_disparity_anchor_val, dtype=np.float32)
+
                         logger.warning(f"Normalization collapsed to zero range ({global_depth_min:.4f} - {global_depth_max:.4f}). Filling with anchor value ({zero_disparity_anchor_val:.2f}).")
 
                 batch_depth_normalized = np.clip(batch_depth_normalized, 0, 1)
 
                 if not assume_raw_input and depth_gamma != 1.0:
-                     batch_depth_normalized = np.power(batch_depth_normalized, depth_gamma)
-                
-                # self._save_debug_numpy(batch_depth_normalized, "03_FINAL_NORMALIZED", i, file_frame_idx, task_name) 
-                
+                      batch_depth_normalized = np.power(batch_depth_normalized, depth_gamma)
+
+                # self._save_debug_numpy(batch_depth_normalized, "03_FINAL_NORMALIZED", i, file_frame_idx, task_name)
+
                 # --- NEW LOGIC: Invert Gamma Effect (Gamma > 1.0 makes near-field brighter) ---
                 if not assume_raw_input and round(depth_gamma, 2) != 1.0:
                     logger.debug(f"Applying gamma reversal for intuitive control (Gamma={depth_gamma:.2f}).")
@@ -917,21 +1144,21 @@ class SplatterWebUI:
                 batch_depth_vis_list = []
                 for d_frame in batch_depth_normalized:
                     d_frame_vis = d_frame.copy()
-                    if d_frame_vis.max() > d_frame_vis.min(): 
+                    if d_frame_vis.max() > d_frame_vis.min():
                         cv2.normalize(d_frame_vis, d_frame_vis, 0, 1, cv2.NORM_MINMAX)
                     vis_frame_uint8 = (d_frame_vis * 255).astype(np.uint8)
                     vis_frame = cv2.applyColorMap(vis_frame_uint8, cv2.COLORMAP_VIRIDIS)
                     batch_depth_vis_list.append(vis_frame.astype("float32") / 255.0)
-                batch_depth_vis = np.stack(batch_depth_vis_list, axis=0) 
+                batch_depth_vis = np.stack(batch_depth_vis_list, axis=0)
 
                 t_end_preproc = time.perf_counter()
                 # --- END TIMER 2 ---
 
                 # --- TIMER 3: HtoD Transfer (CPU to GPU) ---
                 t_start_transfer_HtoD = time.perf_counter()
-                
+
                 left_video_tensor = torch.from_numpy(batch_frames_numpy).permute(0, 3, 1, 2).float().cuda() / 255.0
-                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).float().cuda()        
+                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).float().cuda()
                 disp_map_tensor = (disp_map_tensor - zero_disparity_anchor_val) * 2.0
                 disp_map_tensor = disp_map_tensor * max_disp
 
@@ -944,10 +1171,13 @@ class SplatterWebUI:
 
                 with torch.no_grad():
                     right_video_tensor_raw, occlusion_mask_tensor = stereo_projector(left_video_tensor, disp_map_tensor)
+                    # Clamp tensors to valid range to prevent FFmpeg crashes
+                    right_video_tensor_raw = torch.clamp(right_video_tensor_raw, 0.0, 1.0)
+                    occlusion_mask_tensor = torch.clamp(occlusion_mask_tensor, 0.0, 1.0)
                     if is_low_res_task:
                         # 1. Fill Left Edge Occlusions
                         right_video_tensor_left_filled = self._fill_left_edge_occlusions(right_video_tensor_raw, occlusion_mask_tensor, boundary_width_pixels=3)
-                        
+
                         # 2. Fill Right Edge Occlusions (New Call)
                         right_video_tensor = self._fill_right_edge_occlusions(right_video_tensor_left_filled, occlusion_mask_tensor, boundary_width_pixels=3)
                     else:
@@ -959,7 +1189,7 @@ class SplatterWebUI:
 
                 # --- TIMER 5: DtoH Transfer (GPU to CPU) ---
                 t_start_transfer_DtoH = time.perf_counter()
-                
+
                 right_video_numpy = right_video_tensor.cpu().permute(0, 2, 3, 1).numpy()
                 occlusion_mask_numpy = occlusion_mask_tensor.cpu().permute(0, 2, 3, 1).numpy().repeat(3, axis=-1)
 
@@ -977,29 +1207,29 @@ class SplatterWebUI:
                         video_grid_bottom = np.concatenate([occlusion_mask_numpy[j], right_video_numpy[j]], axis=1)
                         video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
 
+                    # Debug: check for bad values before validation
+                    if frame_count < 3:  # Log for first few frames
+                        logger.info(f"Frame {frame_count}: video_grid shape={video_grid.shape}, min={video_grid.min():.6f}, max={video_grid.max():.6f}, has_nan={np.any(np.isnan(video_grid))}, has_inf={np.any(np.isinf(video_grid))}")
+
                     # Validate frame before sending to FFmpeg
                     if video_grid.shape[0] != grid_height or video_grid.shape[1] != grid_width:
                         logger.error(f"Frame dimension mismatch: expected {grid_width}x{grid_height}, got {video_grid.shape[1]}x{video_grid.shape[0]}")
                         encoding_successful = False
                         break
-                    
+
                     if np.any(np.isnan(video_grid)) or np.any(np.isinf(video_grid)):
                         logger.error(f"Invalid frame data (NaN/Inf detected) at frame {frame_count}. Check depth processing settings.")
                         encoding_successful = False
                         break
 
-                    video_grid_uint8 = (np.clip(video_grid, 0.0, 1.0) * 255.0).astype(np.uint8)
-                    video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
+                    video_grid_clipped = np.clip(video_grid, 0.0, 1.0)
+                    # Convert to 16-bit RGB for FFmpeg
+                    video_grid_uint16 = (video_grid_clipped * 65535.0).astype(np.uint16)
 
                     # --- SEND FRAME TO FFMPEG PIPE ---
-                    try:
-                        ffmpeg_process.stdin.write(video_grid_bgr.tobytes())
-                    except BrokenPipeError as pipe_err:
-                        logger.error(f"Broken pipe while writing frame {frame_count} to FFmpeg. FFmpeg may have crashed.")
-                        logger.error(f"Check FFmpeg error output in finalization logs.")
-                        encoding_successful = False
-                        raise  # Re-raise to be caught by outer exception handler
-                    
+                    ffmpeg_process.stdin.write(video_grid_uint16.tobytes())
+                    ffmpeg_process.stdin.flush()
+
                     frame_count += 1
 
                 t_end_write = time.perf_counter()
@@ -1007,104 +1237,58 @@ class SplatterWebUI:
 
                 del left_video_tensor, disp_map_tensor, right_video_tensor, occlusion_mask_tensor
                 torch.cuda.empty_cache()
-                draw_progress_bar(frame_count, num_frames, prefix=f"  Encoding:")
-        
-                t_end_batch = time.perf_counter() # <--- TIMER END: Total Batch
-                
-                # --- LOG RESULTS: Conditionally log at DEBUG level ---
-                if logger.isEnabledFor(logging.DEBUG):
-                    batch_size_actual = len(current_frame_indices)
-                    task_tag = "LowRes" if is_low_res_task else "HiRes"
-                    
-                    io_time = t_end_io - t_start_io
-                    preproc_time = t_end_preproc - t_start_preproc
-                    htod_time = t_end_transfer_HtoD - t_start_transfer_HtoD
-                    compute_time = t_end_compute - t_start_compute
-                    dtoh_time = t_end_transfer_DtoH - t_start_transfer_DtoH
-                    write_time = t_end_write - t_start_write
-                    total_batch_time = t_end_batch - t_start_batch
 
-                    logger.info(
-                        f"[{task_tag} Batch {i//batch_size_actual + 1}] Frames={batch_size_actual} Total={total_batch_time*1000:.0f}ms | "
-                        f"IO={io_time*1000:.0f}ms | CPU_Proc={preproc_time*1000:.0f}ms | HtoD={htod_time*100:.0f}ms | "
-                        f"GPU_Comp={compute_time*1000:.0f}ms | DtoH={dtoh_time*1000:.0f}ms | FFmpeg_Write={write_time*1000:.0f}ms"
-                    )
                 # --- END LOG RESULTS ---
-
-        except (IOError, BrokenPipeError) as e:
-            logger.error(f"FFmpeg pipe error: {e}. Encoding may have failed.")
-            logger.error(f"Frame count at failure: {frame_count}/{num_frames}")
+        except Exception as e:
+            logger.error(f"Error during splatting: {e}", exc_info=True)
             encoding_successful = False
-        finally:
-            del stereo_projector
-            torch.cuda.empty_cache()
-            gc.collect()
 
-            # --- Finalize FFmpeg process ---
-            # Close stdin first to signal end of input, then wait for process
-            try:
-                if ffmpeg_process.stdin and not ffmpeg_process.stdin.closed:
-                    ffmpeg_process.stdin.close()
-            except (BrokenPipeError, ValueError):
-                pass  # Pipe already closed, ignore
+        # Cleanup
+        del stereo_projector
+        torch.cuda.empty_cache()
+        gc.collect()
 
-            # Wait for the process to finish and get output
-            stderr_output = b""
-            try:
-                stdout, stderr = ffmpeg_process.communicate(timeout=120)
-                stderr_output = stderr
-            except ValueError:
-                # stdin already closed, just wait for process
-                ffmpeg_process.wait(timeout=120)
-                stdout, stderr = b'', b''
-                stderr_output = b''
-            except subprocess.TimeoutExpired:
-                logger.error("FFmpeg process timed out during finalize. Forcing termination.")
-                ffmpeg_process.kill()
-                ffmpeg_process.wait(timeout=10)
-                stderr_output = b"Timeout expired"
+        # --- Finalize FFmpeg process ---
+        # Close stdin first to signal end of input, then wait for process
+        try:
+            if ffmpeg_process.stdin and not ffmpeg_process.stdin.closed:
+                ffmpeg_process.stdin.close()
+        except (BrokenPipeError, ValueError):
+            pass  # Pipe already closed, ignore
 
-            if self.stop_event.is_set():
-                ffmpeg_process.terminate()
-                logger.warning(f"FFmpeg encoding stopped by user for {os.path.basename(final_output_video_path)}.")
-                encoding_successful = False
-            elif ffmpeg_process.returncode != 0:
-                # Decode and log FFmpeg error output
-                try:
-                    ffmpeg_error_msg = stderr_output.decode('utf-8', errors='replace') if stderr_output else "No error output"
-                except:
-                    ffmpeg_error_msg = str(stderr_output) if stderr_output else "Unknown error"
-                
-                logger.error(f"FFmpeg encoding FAILED for {os.path.basename(final_output_video_path)}")
-                logger.error(f"Return code: {ffmpeg_process.returncode}")
-                logger.error(f"FFmpeg error output:\n{ffmpeg_error_msg}")
-                logger.error(f"Debug info: grid={grid_width}x{grid_height}, fps={processed_fps}, frames={frame_count}/{num_frames}, CRF={user_output_crf}")
-                encoding_successful = False
-            else:
-                logger.info(f"Successfully encoded video to {final_output_video_path}")
-                if stderr_output:
-                    logger.debug(f"FFmpeg stderr log:\n{stderr_output.decode('utf-8', errors='replace')}")
-        
+        # Wait for the process to finish
+        try:
+            ffmpeg_process.communicate(timeout=120)
+        except ValueError:
+            # stdin already closed, just wait
+            ffmpeg_process.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            logger.error("FFmpeg process timed out during finalize. Forcing termination.")
+            ffmpeg_process.kill()
+            ffmpeg_process.wait(timeout=10)
+
+        if self.stop_event.is_set():
+            ffmpeg_process.terminate()
+            logger.warning(f"FFmpeg encoding stopped by user for {os.path.basename(final_output_video_path)}.")
+            encoding_successful = False
+        elif ffmpeg_process.returncode != 0:
+            logger.error(f"FFmpeg encoding FAILED for {os.path.basename(final_output_video_path)}")
+            logger.error(f"Return code: {ffmpeg_process.returncode}")
+            logger.error(f"Debug info: grid={grid_width}x{grid_height}, fps={processed_fps}, frames={frame_count}/{num_frames}, CRF={user_output_crf}")
+            encoding_successful = False
+        else:
+            logger.info(f"Successfully encoded video to {final_output_video_path}")
+
         if not encoding_successful:
-            if not force_cpu:
-                force_cpu = True
-                # Kill FFmpeg if running
-                if ffmpeg_process and ffmpeg_process.poll() is None:
-                    ffmpeg_process.terminate()
-                # Reset readers to start over
-                input_video_reader.seek(0)
-                depth_map_reader.seek(0)
-                continue
-            else:
-                # Delete temporary file on failure to prevent corrupted files
-                if os.path.exists(temp_output_path):
-                    try:
-                        os.remove(temp_output_path)
-                        logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
-                    except Exception as cleanup_err:
-                        logger.warning(f"Failed to delete temp file {temp_output_path}: {cleanup_err}")
-                return False
-        
+            # Delete temporary file on failure to prevent corrupted files
+            if os.path.exists(temp_output_path):
+                try:
+                    os.remove(temp_output_path)
+                    logger.info(f"Deleted incomplete temp file: {os.path.basename(temp_output_path)}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to delete temp file {temp_output_path}: {cleanup_err}")
+            return False
+
         # Rename temp file to final path on success
         try:
             if os.path.exists(final_output_video_path):
@@ -1122,20 +1306,19 @@ class SplatterWebUI:
             except Exception as copy_err:
                 logger.error(f"Failed to copy temp file to final output: {copy_err}")
                 return False
-        
+
         # --- Check for Low-Res Task BEFORE writing sidecar ---
         if is_low_res_task:
-            
             # --- Write sidecar JSON after successful encoding ---
             output_sidecar_data = {}
-            
+
             # Check and include frame_overlap and input_bias
             has_non_zero_setting = False
-                
+
             if input_bias is not None and input_bias != 0.0:
                 output_sidecar_data["input_bias"] = input_bias
                 has_non_zero_setting = True
-            
+
             # Use the combined condition: non-zero setting AND is low-res
             if has_non_zero_setting:
                 sidecar_ext = self.APP_CONFIG_DEFAULTS.get('OUTPUT_SIDECAR_EXT', '.spsidecar')
@@ -1151,23 +1334,7 @@ class SplatterWebUI:
         else:
             logger.debug("Skipping output sidecar creation: High-resolution output does not require spsidecar.")
 
-        if encoding_successful:
-            break
-        elif not force_cpu:
-            force_cpu = True
-            # Kill FFmpeg if running
-            if ffmpeg_process and ffmpeg_process.poll() is None:
-                ffmpeg_process.terminate()
-            # Reset readers to start over
-            input_video_reader.seek(0)
-            depth_map_reader.seek(0)
-            continue
-        else:
-            break
-
-# After the while loop
-os.environ.pop('FORCE_CPU_ENCODING', None)
-return encoding_successful
+        return encoding_successful
 
     def _determine_auto_convergence(self, depth_map_path: str, total_frames_to_process: int, batch_size: int, fallback_value: float) -> Tuple[float, float]:
         """
@@ -1520,6 +1687,7 @@ return encoding_successful
             "skip_lowres_preproc": self.skip_lowres_preproc,
             "track_dp_total_true_on_render": self.track_dp_total_true_on_render,
         }
+        print("Settings defined")
         return config
 
     def _get_current_sidecar_paths_and_data(self):
@@ -2500,7 +2668,10 @@ return encoding_successful
         """
         input_source_clips_path = settings["input_source_clips"]
         input_depth_maps_path = settings["input_depth_maps"]
-        output_splatted = settings["output_splatted"]
+
+        import sys
+        print(f"input_source_clips_path: {input_source_clips_path}", file=sys.stderr)
+        print(f"input_depth_maps_path: {input_depth_maps_path}", file=sys.stderr)
 
         is_source_file = os.path.isfile(input_source_clips_path)
         is_source_dir = os.path.isdir(input_source_clips_path)
@@ -2520,7 +2691,7 @@ return encoding_successful
                 "'finished' folders (unless specifically enabled in Single Process mode)."
             )
             input_videos.append(input_source_clips_path)
-            os.makedirs(output_splatted, exist_ok=True)
+            os.makedirs(settings["output_splatted"], exist_ok=True)
 
         elif is_source_dir and is_depth_dir:
             # Batch (folder) mode
@@ -2538,12 +2709,14 @@ return encoding_successful
                     "Files will remain in input folders."
                 )
 
-            os.makedirs(output_splatted, exist_ok=True)
+            os.makedirs(settings["output_splatted"], exist_ok=True)
 
             video_extensions = ("*.mp4", "*.avi", "*.mov", "*.mkv")
             for ext in video_extensions:
                 input_videos.extend(glob.glob(os.path.join(input_source_clips_path, ext)))
             input_videos = sorted(input_videos)
+            import sys
+            print(f"input_videos: {input_videos}", file=sys.stderr)
 
         else:
             msg = (
@@ -2566,6 +2739,7 @@ return encoding_successful
         }
 
     def _run_batch_process(self, settings, progress=gr.Progress()):
+        print("Starting batch process")
         """
         Batch processing entry point.
 
@@ -2576,12 +2750,14 @@ return encoding_successful
         In single-file mode:
           - The From/To fields are ignored and the single video is processed.
         """
+        print("Batch process completed")
+        import sys
+        print("_run_batch_process called", file=sys.stderr)
         try:
             # --- 1. Basic setup (folder paths, discovered videos, etc.) ---
             setup_result = self._setup_batch_processing(settings)
             if "error" in setup_result:
-                logger.error(setup_result["error"])
-                return
+                raise ValueError(setup_result["error"])
 
             input_videos = setup_result["input_videos"]
             is_single_file_mode = setup_result["is_single_file_mode"]
@@ -2589,7 +2765,7 @@ return encoding_successful
             finished_depth_folder = setup_result["finished_depth_folder"]
 
             if not input_videos:
-                logger.error("No input videos found for processing.")
+                yield "Error: No input videos found for processing.", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
                 return
 
             # --- 2. Apply From/To range on the *preview list* when available ---
@@ -2703,8 +2879,8 @@ return encoding_successful
                 logger.warning(f"Could not write status file: {status_err}")
 
             # Yield completion status and reset UI
-            yield "Processing completed", 100, 100, "", ""
-            yield "Ready", 0, 0, "", ""
+            yield "Processing completed", 100, gr.Button(interactive=True), gr.Button(interactive=False), gr.Button(interactive=True)
+            yield "Ready", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
 
         except Exception as e:
             logger.error(f"An unexpected error occurred during batch processing: {e}", exc_info=True)
@@ -2716,7 +2892,7 @@ return encoding_successful
             except:
                 pass
             # Yield error status to UI
-            yield f"❌ Error: {str(e)}", 0, 0, "", ""
+            yield f"❌ Error: {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
         finally:
             release_cuda_memory()
             # Write final status
@@ -2738,8 +2914,21 @@ return encoding_successful
             logger.info("Starting Fusion Export Sidecar Generation...")
             generator = FusionSidecarGenerator(self, self.sidecar_manager)
             generator.generate_sidecars()
-            
+
         threading.Thread(target=worker, daemon=True).start()
+
+    def run_fusion_sidecar_generator_gradio(self, export_file, target_folder):
+        """Gradio version of fusion sidecar generator."""
+        if not export_file:
+            return "No export file selected."
+        if not target_folder:
+            return "No target folder specified."
+
+        # export_file is a file object, get the path
+        export_path = export_file.name if hasattr(export_file, 'name') else str(export_file)
+
+        generator = FusionSidecarGenerator(self, self.sidecar_manager)
+        return generator.generate_sidecars(export_path, target_folder)
 
     def run_preview_auto_converge_with_mode(self, mode: str, preview_format: str = "Side-by-Side"):
         """
@@ -3581,6 +3770,18 @@ return encoding_successful
         with open(config_filename, "w") as f:
             json.dump(config, f, indent=4)
 
+    def _run_batch_process_wrapper(self, settings):
+        print("Wrapper called")
+        try:
+            print("About to call _run_batch_process")
+            self._run_batch_process(settings)
+            print("Returned from _run_batch_process") 
+        except Exception as e:
+            import sys
+            print(f"Exception in _run_batch_process: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
     def start_processing(self,
                          input_source_clips, input_depth_maps, output_splatted,
                          max_disp, process_length, enable_full_res, batch_size,
@@ -3658,6 +3859,12 @@ return encoding_successful
         self.process_from = process_from
         self.process_to = process_to
 
+
+
+        if self.processing:
+            yield "Already processing, please wait...", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
+            return
+
         # Input validation for all fields
         try:
             if max_disp <= 0:
@@ -3678,19 +3885,19 @@ return encoding_successful
 
             if not (enable_full_res or enable_low_res):
                 raise ValueError("At least one resolution (Full or Low) must be enabled to start processing.")
-            
+
             # Depth Pre-processing Validation
             if depth_gamma <= 0:
                 raise ValueError("Depth Gamma must be positive.")
-            
+
             # Validate Dilate X/Y
             if depth_dilate_size_x < -10 or depth_dilate_size_y < -10:
                 raise ValueError("Depth Dilate Sizes (X/Y) must be >= -10.")
-            
+
             # Validate Blur X/Y
             if depth_blur_size_x < 0 or depth_blur_size_y < 0:
                 raise ValueError("Depth Blur Sizes (X/Y) must be non-negative.")
-            
+
             # Validate Left-edge processing
             if depth_dilate_left < 0:
                 raise ValueError("Depth Dilate Left must be non-negative.")
@@ -3698,15 +3905,28 @@ return encoding_successful
                 raise ValueError("Depth Blur Left must be non-negative.")
             if not (0.0 <= depth_blur_left_mix <= 1.0):
                 raise ValueError("Blur Left Mix must be between 0.0 and 1.0.")
-            
+
             # Validate Border controls
             if border_width < 0 or border_width > 5.0:
                 raise ValueError("Border Width must be between 0.0 and 5.0.")
             if border_bias < -1.0 or border_bias > 1.0:
                 raise ValueError("Border Bias must be between -1.0 and 1.0.")
 
+            if process_length != -1 and process_length <= 0:
+               raise ValueError("Process length must be -1 (all frames) or a positive integer.")
+
         except ValueError as e:
-            return f"Error: {e}", 0
+            print(f"Validation error: {e}")
+            yield f"Error: {e}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
+            return
+
+        # Check inputs
+        if not input_source_clips or not input_depth_maps:
+            print("No input source clips or depth maps selected")
+            yield "Error: No input source clips or depth maps selected", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
+            return
+
+        self.processing = True
 
         settings = {
             "input_source_clips": input_source_clips,
@@ -3752,11 +3972,18 @@ return encoding_successful
             "process_from": process_from,
             "process_to": process_to,
         }
-        
-        # Run the processing in a separate thread
-        self.processing_thread = threading.Thread(target=self._run_batch_process, args=(settings,))
-        self.processing_thread.start()
-        return "Processing started...", 50, gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
+
+        # Run the processing as generator
+        try:
+            for update in self._run_batch_process(settings):
+                yield update
+            self.processing = False
+        except Exception as e:
+            self.processing = False
+            print(f"Processing error: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"Error during processing: {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
 
     def start_single_processing(self,
                                 input_source_clips, input_depth_maps, output_splatted,
@@ -3921,12 +4148,9 @@ return encoding_successful
         # 4. Start the processing thread
         self.stop_event.clear()
 
-        self.processing_thread = threading.Thread(target=self._run_batch_process, args=(settings,))
-        self.processing_thread.start()
-        
-        # Note: Thread runs in background. Check console logs for completion status.
-        # The UI will show "started" immediately, but processing continues in background.
-        # Watch for "✅ Batch processing completed" in console to know when it's done.
+        self._run_batch_process(settings)
+
+        # Processing completed synchronously
         return "Processing started - check console for completion status", 50, gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
 
     def stop_processing(self):
@@ -4015,7 +4239,7 @@ return encoding_successful
                                 info="The number of frames to process simultaneously when generating the full-resolution output. A higher value uses more VRAM but can be faster. Adjust based on your GPU's memory. Too high a value will bog down ffmpeg encode."
                             )
                             self.dual_output_comp = gr.Checkbox(
-                                label="Dual Output Only", 
+                                label="Dual Output Only",
                                 value=self.dual_output,
                                 info="If checked, will generate dual panel for inpaint right eye only. Unchecked will generate quad panel for complete low-res stereo SBS after inpainting. Use this(Dual) to save on resources and manual blending."
                             )
@@ -4447,8 +4671,24 @@ return encoding_successful
                 outputs=[self.zero_disparity_anchor_comp, self.max_disp_comp, self.status_label]
             )
 
-        return interface
 
+            # Tools Section
+            with gr.Group():
+                gr.Markdown("### Tools")
+                with gr.Row():
+                    fusion_export_file = gr.File(label="Fusion Export File (.fsexport)", file_types=[".fsexport", ".txt"])
+                    fusion_target_folder = gr.Textbox(label="Target Depth Map Folder", value=self.input_depth_maps)
+                with gr.Row():
+                    fusion_button = gr.Button("Generate Sidecars from Fusion Export", variant="secondary")
+                    fusion_status = gr.Textbox(label="Fusion Status", value="", interactive=False)
+
+                fusion_button.click(
+                    fn=self.run_fusion_sidecar_generator_gradio,
+                    inputs=[fusion_export_file, fusion_target_folder],
+                    outputs=[fusion_status]
+                )
+
+        return interface
     def auto_detect_low_res_from_input(self, source_folder):
         """
         Auto-detect input video resolution and set appropriate low-res settings.

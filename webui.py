@@ -33,7 +33,7 @@ class CombinedWebUI:
     Main orchestrator for the StereoCrafter WebUI.
     Combines all UI components into a single tabbed interface.
     """
-    
+
     def __init__(self):
         # Initialize all components
         self.depthcrafter_gui = DepthCrafterWebUI()
@@ -54,16 +54,16 @@ class CombinedWebUI:
 
             with gr.Tab("DepthCrafter"):
                 self.depthcrafter_gui.create_interface()
-                
+
             with gr.Tab("Splatting"):
                 self.splatting_gui.create_interface()
-                
+
             with gr.Tab("Inpainting"):
                 self.inpainting_gui.create_interface()
-                
+
             with gr.Tab("Merging"):
                 self.merging_gui.create_interface()
-            
+
             with gr.Tab("📂 File Manager"):
                 with gr.Row():
                     with gr.Column():
@@ -75,12 +75,14 @@ class CombinedWebUI:
                         filebrowser_url = "http://localhost:8080"  # Adjust port as needed
                         gr.Markdown(f"[Open File Browser]({filebrowser_url})")
                         gr.Button("🔗 Launch File Browser", link=filebrowser_url)
-        
+
         return interface
 
 
 def launch():
     """Launch the combined WebUI"""
+    import os
+    os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
     app = CombinedWebUI()
     interface = app.create_interface()
     interface.launch(share=False, server_name="0.0.0.0", server_port=7860)
@@ -94,9 +96,15 @@ if __name__ == "__main__":
     # Initialize CUDA and clear cache before UI initialization
     # This ensures get_vram_config() gets accurate memory readings
     if torch.cuda.is_available():
-        torch.cuda.init()
-        torch.cuda.empty_cache()
-        print(f"[DEBUG] CUDA initialized. GPU: {torch.cuda.get_device_name(0)}")
-        print(f"[DEBUG] Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+        try:
+            print("[DEBUG] Initializing CUDA...")
+            torch.cuda.init()
+            torch.cuda.empty_cache()
+            print(f"[DEBUG] CUDA initialized. GPU: {torch.cuda.get_device_name(0)}")
+            print(f"[DEBUG] Total VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+        except Exception as e:
+            print(f"[ERROR] CUDA initialization failed: {e}")
+    else:
+        print("[DEBUG] CUDA not available.")
     
     launch()

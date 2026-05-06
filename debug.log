@@ -1,0 +1,16 @@
+
+start_processing called
+input_source_clips: ./input_source_clips
+input_depth_maps: ./output_depthmaps
+Parameters: process_length=-1, batch_size=10, enable_full_res=True, enable_low_res=True, pre_res_width=640, pre_res_height=360, low_res_batch_size=15, output_splatted=./output_splatted
+Before validation
+start_processing called
+input_source_clips: ./input_source_clips
+input_depth_maps: ./output_depthmaps
+Parameters: process_length=-1, batch_size=10, enable_full_res=True, enable_low_res=True, pre_res_width=640, pre_res_height=360, low_res_batch_size=15, output_splatted=./output_splatted
+Before validation
+start_processing called
+input_source_clips: ./input_source_clips
+input_depth_maps: ./output_depthmaps
+Parameters: process_length=-1, batch_size=10, enable_full_res=True, enable_low_res=True, pre_res_width=640, pre_res_height=360, low_res_batch_size=15, output_splatted=./output_splatted
+Before validation

@@ -50,13 +50,10 @@ class DepthCrafterWebUI(BaseWebUI):
             gpu_name = gpu_info.get('gpu_name', '').lower()
             total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
             
-            # RTX 3060 12GB or better with shared memory: Use hybrid approach
-            if total_dedicated_gb >= 12 and gpu_info.get('is_shared_memory_system', False):
-                # RTX 3060 12GB with shared memory: Use hybrid approach
-                default_offload = 'shared_memory'
-            elif total_dedicated_gb >= 12:
-                # 12GB+ dedicated VRAM: No offload needed
-                default_offload = 'none'
+            # RTX 3060 12GB or better: Use model offload for better performance
+            if total_dedicated_gb >= 12:
+                # 12GB+ dedicated VRAM: Model offload for optimal performance
+                default_offload = 'model'
             elif total_dedicated_gb >= 8:
                 # 8-12GB: Model offload for safety
                 default_offload = 'model'
@@ -264,12 +261,24 @@ class DepthCrafterWebUI(BaseWebUI):
         )
         self.is_depth_far_black = gr.Checkbox(label="Is Depth Far Black", value=True)
         self.dark_mode_var = gr.Checkbox(label="Dark Mode", value=False)
-        self.disable_xformers_var = gr.Checkbox(label="Disable xFormers (VRAM Save)", value=True)
-        self.hf_token = gr.Textbox(
-            label="Hugging Face Token",
-            value=os.environ.get("HF_TOKEN", ""),
-            info="Enter your Hugging Face access token for downloading gated models. Leave empty if using local models only."
-        )
+
+        # Auto-detect GPU for xformers and cudnn defaults
+        try:
+            gpu_info = get_gpu_memory_info()
+            total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
+            if total_dedicated_gb >= 8:
+                # Enable optimizations for 8GB+ GPUs
+                default_disable_xformers = False
+                default_use_cudnn = True
+            else:
+                default_disable_xformers = True
+                default_use_cudnn = False
+        except:
+            default_disable_xformers = True
+            default_use_cudnn = False
+
+        self.disable_xformers_var = gr.Checkbox(label="Disable xFormers (VRAM Save)", value=default_disable_xformers)
+        self.use_cudnn_benchmark = gr.Checkbox(label="Use cuDNN Benchmark", value=default_use_cudnn)
         
         # Status and progress
         self.status_message_var = gr.Textbox(label="Status", value="Ready")
@@ -278,6 +287,7 @@ class DepthCrafterWebUI(BaseWebUI):
     def create_interface(self):
         """Creates the Gradio interface for DepthCrafter"""
         
+        print("[DEBUG] Creating Input Source section...")
         # Input Source Section
         with gr.Group():
             gr.Markdown("### Input Source")
@@ -288,47 +298,44 @@ class DepthCrafterWebUI(BaseWebUI):
             with gr.Row():
                 self.output_dir.render()
         
-        # Main Settings Container - Two columns side by side
+        print("[DEBUG] Creating Main Settings container...")
+        # Main Settings Container - Use accordions to reduce initial load
         with gr.Row():
             # Left Column
             with gr.Column():
-                # Main Parameters
-                with gr.Group():
-                    gr.Markdown("### Main Parameters")
+                with gr.Accordion("Main Parameters", open=True):
                     self.guidance_scale.render()
                     self.inference_steps.render()
                     self.target_width.render()
                     self.target_height.render()
                     self.seed.render()
                     self.cpu_offload.render()
-                
-                # Merged Output Options (if segments processed)
-                with gr.Group():
-                    gr.Markdown("### Merged Output Options (if segments processed)")
+                    self.use_cudnn_benchmark.render()
+                    self.disable_xformers_var.render()
+
+                with gr.Accordion("Merged Output Options", open=False):
                     self.keep_intermediate_npz_var.render()
                     self.min_frames_to_keep_npz_var.render()
                     self.keep_intermediate_segment_visual_format_var.render()
-                    
+
                     self.merge_dither_var.render()
                     self.merge_dither_strength_var.render()
-                    
+
                     self.merge_gamma_correct_var.render()
                     self.merge_gamma_value_var.render()
-                    
+
                     self.merge_percentile_norm_var.render()
                     with gr.Row():
                         self.merge_norm_low_perc_var.render()
                         self.merge_norm_high_perc_var.render()
-                    
+
                     self.merge_alignment_method_var.render()
                     self.merge_output_format_var.render()
                     self.merge_output_suffix_var.render()
-            
+
             # Right Column
             with gr.Column():
-                # Frame & Segment Control
-                with gr.Group():
-                    gr.Markdown("### Frame & Segment Control")
+                with gr.Accordion("Frame & Segment Control", open=False):
                     self.window_size.render()
                     self.overlap.render()
                     self.decode_chunk_size.render()
@@ -336,10 +343,8 @@ class DepthCrafterWebUI(BaseWebUI):
                     self.process_length.render()
                     self.save_final_output_json_var.render()
                     self.process_as_segments_var.render()
-                
-                # Secondary Output
-                with gr.Group():
-                    gr.Markdown("### Secondary Output")
+
+                with gr.Accordion("Secondary Output", open=False):
                     self.enable_dual_output_robust_norm.render()
                     gr.Markdown("**Depth Output Range (0-1):**")
                     with gr.Row():
@@ -351,10 +356,7 @@ class DepthCrafterWebUI(BaseWebUI):
                         self.robust_norm_high_percentile.render()
                     self.robust_output_suffix.render()
 
-        # Hugging Face Authentication
-        with gr.Group():
-            gr.Markdown("### Hugging Face Authentication")
-            self.hf_token.render()
+
 
         # Controls Section
         with gr.Group():
@@ -419,7 +421,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
                 self.robust_norm_high_percentile, self.robust_norm_output_min,
                 self.robust_norm_output_max, self.robust_output_suffix,
-                self.is_depth_far_black, self.disable_xformers_var, self.hf_token
+                self.is_depth_far_black, self.disable_xformers_var
             ],
             outputs=[self.status_message_var, self.progress]
         )
@@ -451,7 +453,7 @@ class DepthCrafterWebUI(BaseWebUI):
             ],
             outputs=[self.status_message_var, self.progress]
         )
-        
+
         return [
             self.input_dir_or_file_var, self.output_dir,
             self.guidance_scale, self.inference_steps, self.seed,
@@ -469,8 +471,8 @@ class DepthCrafterWebUI(BaseWebUI):
             self.target_height, self.target_width,
             self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
             self.robust_norm_high_percentile, self.robust_norm_output_min,
-            self.robust_norm_output_max, self.robust_output_suffix,
-            self.is_depth_far_black, self.disable_xformers_var, self.hf_token,
+            self.robust_norm_output_max,             self.robust_output_suffix,
+            self.is_depth_far_black, self.disable_xformers_var,
             self.progress, self.status_message_var
         ]
 
@@ -496,7 +498,7 @@ class DepthCrafterWebUI(BaseWebUI):
          enable_dual_output_robust_norm, robust_norm_low_percentile,
          robust_norm_high_percentile, robust_norm_output_min,
          robust_norm_output_max, robust_output_suffix,
-         is_depth_far_black, disable_xformers, hf_token) = args
+         is_depth_far_black, disable_xformers) = args
 
         try:
             # Parameter validation and type conversion
@@ -546,12 +548,15 @@ class DepthCrafterWebUI(BaseWebUI):
             except Exception as e:
                 logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
                 max_res = 1024
-            if target_height > max_res:
-                logger.warning(f"Target height {target_height} > {max_res}, reducing to {max_res} to prevent OOM")
-                target_height = max_res
-            if target_width > max_res:
-                logger.warning(f"Target width {target_width} > {max_res}, reducing to {max_res} to prevent OOM")
-                target_width = max_res
+            # Preserve aspect ratio when clamping resolution
+            if target_height > max_res or target_width > max_res:
+                scale = min(1.0, max_res / max(target_height, target_width))
+                new_height = int(target_height * scale)
+                new_width = int(target_width * scale)
+                if new_height != target_height or new_width != target_width:
+                    logger.warning(f"Target resolution {target_width}x{target_height} exceeds max_res {max_res}, scaling down to {new_width}x{new_height} to prevent OOM while preserving aspect ratio")
+                    target_height = new_height
+                    target_width = new_width
 
             logger.info("="*60)
             logger.info("PROCESSING STARTED - Actual Values Being Used")
@@ -573,7 +578,6 @@ class DepthCrafterWebUI(BaseWebUI):
                 use_cudnn_benchmark=use_cudnn_benchmark,
                 local_files_only=use_local_models_only,
                 disable_xformers=disable_xformers,
-                token=hf_token if hf_token else None,
             )
 
             # Set PyTorch CUDA memory config to reduce fragmentation
@@ -917,8 +921,9 @@ class DepthCrafterWebUI(BaseWebUI):
 
             # Clean up large objects even on error
             try:
-                del demo
-                logger.debug("Deleted DepthCrafter demo object after error")
+                if 'demo' in locals():
+                    del demo
+                    logger.debug("Deleted DepthCrafter demo object after error")
             except Exception as cleanup_e:
                 logger.warning(f"Failed to delete demo object after error: {cleanup_e}")
 

@@ -1727,9 +1727,10 @@ class InpaintingGUI(ThemedTk):
                     shutil.rmtree(temp_png_dir, ignore_errors=True)
                     return False, None
 
-                frame_tensor = final_output_frames_for_encoding[frame_idx] 
+                frame_tensor = final_output_frames_for_encoding[frame_idx]
                 frame_np = frame_tensor.permute(1, 2, 0).numpy()
                 frame_uint16 = (np.clip(frame_np, 0.0, 1.0) * 65535.0).astype(np.uint16)
+                frame_bgr = cv2.cvtColor(frame_uint16, cv2.COLOR_RGB2BGR)
                 frame_bgr = cv2.cvtColor(frame_uint16, cv2.COLOR_RGB2BGR)
                 png_path = os.path.join(temp_png_dir, f"{frame_idx:05d}.png")
                 cv2.imwrite(png_path, frame_bgr)

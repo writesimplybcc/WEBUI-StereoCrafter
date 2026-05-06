@@ -2068,6 +2068,12 @@ def start_ffmpeg_pipe_process(
                 f"Padding enabled. Content: {content_width}x{content_height}, Container: {output_width}x{output_height}"
             )
 
+    # --- Determine input pixel format based on output format ---
+    if output_format_str:
+        input_pix_fmt = "rgb48le"  # 16-bit RGB for merging/splatting outputs
+    else:
+        input_pix_fmt = "rgb24"  # 8-bit RGB for other formats
+
     # --- This command-building logic is adapted from the original encode_frames_to_mp4 ---
     ffmpeg_cmd = [
         "ffmpeg",
@@ -2082,12 +2088,20 @@ def start_ffmpeg_pipe_process(
         "-s",
         f"{content_width}x{content_height}",  # Input pipe is always the content size
         "-pix_fmt",
-        "bgr48le",  # Input is 16-bit BGR from OpenCV
+        input_pix_fmt,
         "-r",
-        str(fps),
+        str(int(round(fps))),
         "-i",
         "-",  # Read input from stdin pipe
     ]
+
+    # Capture stdout and stderr to prevent blocking
+    ffmpeg_process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
 
     # --- Determine Output Codec, Bit-Depth, and Quality ---
     output_codec = "libx264"
@@ -2358,14 +2372,14 @@ def start_ffmpeg_pipe_process(
         ffmpeg_cmd.extend(["-movflags", "+write_colr"])
 
     ffmpeg_cmd.append(final_output_mp4_path)
-    logger.debug(f"FFmpeg pipe command: {' '.join(ffmpeg_cmd)}")
+    print(f"FFmpeg pipe command: {' '.join(ffmpeg_cmd)}")
 
     try:
         process = subprocess.Popen(
             ffmpeg_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,  # Discard stdout to prevent pipe buffer issues
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # Discard stderr to prevent buffer issues during piping
         )
         try:
             process.sc_encode_flags = sc_encode_flags  # type: ignore[attr-defined]

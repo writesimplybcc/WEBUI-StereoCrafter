@@ -506,7 +506,7 @@ class ForwardWarpStereo(nn.Module):
         disp = disp.contiguous()
         weights_map = disp - disp.min()
         weights_map = (1.414) ** weights_map
-        flow = -disp.squeeze(1)
+        flow = disp.squeeze(1)  # Positive disparity shifts right for right eye
         dummy_flow = torch.zeros_like(flow, requires_grad=False)
         flow = torch.stack((flow, dummy_flow), dim=-1)
         res_accum = self.fw(im * weights_map, flow)
@@ -3135,7 +3135,7 @@ class SplatterGUI(ThemedTk):
         grid_height, grid_width = (
             (height, width * 2) if dual_output else (height * 2, width * 2)
         )
-        suffix = "_splatted2" if dual_output else "_splatted4"
+        suffix = "_splatted"
         res_suffix = f"_{width}"
         final_output_video_path = (
             f"{os.path.splitext(output_video_path_base)[0]}{res_suffix}{suffix}.mp4"
@@ -3173,6 +3173,9 @@ class SplatterGUI(ThemedTk):
             encode_stream_info = (
                 dict(video_stream_info) if isinstance(video_stream_info, dict) else {}
             )
+            # Override width and height for grid output
+            encode_stream_info["width"] = grid_width
+            encode_stream_info["height"] = grid_height
             try:
                 _ct_mode = (
                     self.color_tags_mode_var.get()
@@ -3550,13 +3553,18 @@ class SplatterGUI(ThemedTk):
 
                 batch_depth_normalized = np.clip(batch_depth_normalized, 0, 1)
 
+                # Apply gamma correction and inversion only for raw input mode
+                if assume_raw_input_mode:
+                    batch_depth_normalized = 1.0 - np.power(batch_depth_normalized, depth_gamma)
+
                 # --- START OF DIAGNOSTIC SYNC BLOCK ---
-                # Keeps depth visualization at 16-bit to prevent banding in the Render output
+                # Create colorized depth visualization for preview and output grid
                 batch_depth_vis_list = []
                 for d_frame in batch_depth_normalized:
-                    # We keep this as float32 for the assembly to prevent 8-bit quantization
-                    vis_gray_3ch = np.stack([d_frame] * 3, axis=-1)
-                    batch_depth_vis_list.append(vis_gray_3ch.astype("float32"))
+                    depth_vis_8bit = (d_frame * 255).astype(np.uint8)
+                    depth_vis_colored = cv2.applyColorMap(depth_vis_8bit, cv2.COLORMAP_JET)
+                    depth_vis_rgb = cv2.cvtColor(depth_vis_colored, cv2.COLOR_BGR2RGB)
+                    batch_depth_vis_list.append(depth_vis_rgb.astype("float32") / 255.0)
 
                 batch_depth_vis = np.stack(batch_depth_vis_list, axis=0)
                 # --- END OF DIAGNOSTIC SYNC BLOCK ---
@@ -3579,6 +3587,9 @@ class SplatterGUI(ThemedTk):
                 )
                 disp_map_tensor = (disp_map_tensor - zero_disparity_anchor_val) * 2.0
                 disp_map_tensor = disp_map_tensor * max_disp
+
+                # Log disparity range for debugging
+                logger.info(f"Disparity range: min={disp_map_tensor.min().item():.2f}, max={disp_map_tensor.max().item():.2f}")
 
                 torch.cuda.synchronize()  # Force synchronization before compute
                 t_end_transfer_HtoD = time.perf_counter()
@@ -3820,7 +3831,7 @@ class SplatterGUI(ThemedTk):
                 for j in range(len(batch_frames_numpy)):
                     if dual_output:
                         video_grid = np.concatenate(
-                            [occlusion_mask_numpy[j], right_video_numpy[j]], axis=1
+                            [batch_frames_float[j], right_video_numpy[j]], axis=1
                         )
                     else:
                         video_grid_top = np.concatenate(
@@ -3916,6 +3927,15 @@ class SplatterGUI(ThemedTk):
                         f"Successfully encoded video to {final_output_video_path}"
                     )
                     logger.debug(f"FFmpeg stderr log:\n{stderr.decode()}")
+
+                    # Check output resolution
+                    stream_info = get_video_stream_info(final_output_video_path)
+                    if stream_info:
+                        width = stream_info.get("width")
+                        height = stream_info.get("height")
+                        logger.info(f"Output video {os.path.basename(final_output_video_path)} resolution: {width}x{height}")
+                    else:
+                        logger.warning(f"Could not get stream info for {final_output_video_path}")
             else:
                 # Test mode: no encoding step was started, so nothing to finalize.
                 pass
@@ -7482,10 +7502,14 @@ class SplatterGUI(ThemedTk):
         input_depth_maps_path = settings["input_depth_maps"]
         output_splatted = settings["output_splatted"]
 
+        logger.info(f"Setup batch processing: input_source_clips='{input_source_clips_path}', input_depth_maps='{input_depth_maps_path}'")
+
         is_source_file = os.path.isfile(input_source_clips_path)
         is_source_dir = os.path.isdir(input_source_clips_path)
         is_depth_file = os.path.isfile(input_depth_maps_path)
         is_depth_dir = os.path.isdir(input_depth_maps_path)
+
+        logger.info(f"Path types: source_file={is_source_file}, source_dir={is_source_dir}, depth_file={is_depth_file}, depth_dir={is_depth_dir}")
 
         input_videos = []
         finished_source_folder = None

@@ -1062,27 +1062,29 @@ class MergingWebUI:
                     content_width=output_width,
                     content_height=output_height,
                     final_output_mp4_path=output_path,
-                    fps=fps, 
+                    fps=fps,
                     video_stream_info=video_stream_info,
                     pad_to_16_9=pad_to_16_9,
                     output_format_str=output_format_current,
-                    debug_label="WEBUI_MERGE"
                 )
-                
-                # Restore CUDA flag
-                CUDA_AVAILABLE = original_cuda
-                
-                print(f"[DEBUG] FFmpeg started: {ffmpeg_process}")
-                
-                # Print encoder info if available
-                if ffmpeg_process and hasattr(ffmpeg_process, 'sc_encode_flags'):
-                    flags = ffmpeg_process.sc_encode_flags
-                    print(f"[DEBUG] Encoder flags: codec={flags.get('enc_codec')}, {flags.get('quality_mode')}={flags.get('quality_value')}")
-                    print(f"[DEBUG] Full encoder info: {flags}")
 
                 if not ffmpeg_process:
                     yield f"Error starting FFmpeg for {base_name}", current_percent
                     continue
+
+                # Start threads to read stdout and stderr to prevent deadlock
+                stdout_thread = threading.Thread(
+                    target=self._read_ffmpeg_output,
+                    args=(ffmpeg_process.stdout, logging.DEBUG),
+                    daemon=True
+                )
+                stderr_thread = threading.Thread(
+                    target=self._read_ffmpeg_output,
+                    args=(ffmpeg_process.stderr, logging.DEBUG),
+                    daemon=True
+                )
+                stdout_thread.start()
+                stderr_thread.start()
 
                 # --- 3. Process Chunks ---
                 print(f"[DEBUG] Starting processing chunks...")
@@ -1220,9 +1222,9 @@ class MergingWebUI:
 
                         frame_np = frame_tensor.permute(1, 2, 0).numpy()
                         frame_uint16 = (np.clip(frame_np, 0.0, 1.0) * 65535.0).astype(np.uint16)
-                        frame_bgr = cv2.cvtColor(frame_uint16, cv2.COLOR_RGB2BGR)
                         try:
-                            ffmpeg_process.stdin.write(frame_bgr.tobytes())
+                            ffmpeg_process.stdin.write(frame_uint16.tobytes())
+                            ffmpeg_process.stdin.flush()
                         except BrokenPipeError:
                             print("[DEBUG] Broken Pipe Error writing to FFmpeg")
                             raise
@@ -1232,8 +1234,19 @@ class MergingWebUI:
 
                 # Close FFmpeg
                 if ffmpeg_process.stdin:
-                    ffmpeg_process.stdin.close()
-                ffmpeg_process.wait()
+                    try:
+                        if not ffmpeg_process.stdin.closed:
+                            ffmpeg_process.stdin.close()
+                    except OSError as close_err:
+                        # "flush of closed file" - FFmpeg already exited
+                        logger.warning(f"FFmpeg stdin already closed: {close_err}")
+                    except (BrokenPipeError, ValueError):
+                        pass  # Pipe already closed or broken, ignore
+
+                # Wait for the process to finish first, then join threads
+                ffmpeg_process.wait(timeout=120)
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
 
                 # Move files to finished (simplified for WebUI)
                 yield f"Completed: {base_name}", ((i+1)/total_videos*100)
@@ -1243,6 +1256,20 @@ class MergingWebUI:
         except Exception as e:
             traceback.print_exc()
             yield f"Error: {str(e)}", 0
+
+    def _read_ffmpeg_output(self, pipe, log_level):
+        """Helper method to read FFmpeg's output without blocking."""
+        try:
+            # Use iter to read line by line
+            for line in iter(pipe.readline, b''): # Read bytes until an empty byte string
+                if line:
+                    # Decode bytes to string for logging, ignoring potential decoding errors
+                    logger.log(log_level, f"FFmpeg: {line.decode('utf-8', errors='ignore').strip()}")
+        except Exception as e:
+            logger.error(f"Error reading FFmpeg pipe: {e}")
+        finally:
+            if pipe:
+                pipe.close()
 
     def stop_processing(self):
         self.stop_event.set()
