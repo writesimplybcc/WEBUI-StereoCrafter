@@ -1213,6 +1213,12 @@ class MergingWebUI:
                     else:
                         final_chunk = blended_right
 
+                    # Clamp to valid range to prevent color artifacts
+                    final_chunk = torch.clamp(final_chunk, 0, 1)
+
+                    # Convert RGB to BGR for FFmpeg (expects bgr48le)
+                    final_chunk = final_chunk[:, [2, 1, 0], :, :]
+
                     # Write to pipe
                     cpu_chunk = final_chunk.cpu()
                     for chunk_idx, frame_tensor in enumerate(cpu_chunk):

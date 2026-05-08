@@ -207,6 +207,7 @@ def load_inpainting_pipeline_local(
             variant="fp16",
             torch_dtype=dtype,
             token=token,
+            local_files_only=True,
         )
         vae = AutoencoderKLTemporalDecoder.from_pretrained(
             svd_path,
@@ -214,6 +215,7 @@ def load_inpainting_pipeline_local(
             variant="fp16",
             torch_dtype=dtype,
             token=token,
+            local_files_only=True,
         )
         # Load UNet directly from StereoCrafter root (no unet_diffusers subfolder in HF repo)
         unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -221,6 +223,7 @@ def load_inpainting_pipeline_local(
             low_cpu_mem_usage=True,
             torch_dtype=dtype,
             token=token,
+            local_files_only=True,
         )
 
         image_encoder.requires_grad_(False)
@@ -230,11 +233,13 @@ def load_inpainting_pipeline_local(
         # Load feature extractor and scheduler from SVD path
         feature_extractor = CLIPImageProcessor.from_pretrained(
             svd_path,
-            subfolder="feature_extractor"
+            subfolder="feature_extractor",
+            local_files_only=True,
         )
         scheduler = EulerDiscreteScheduler.from_pretrained(
             svd_path,
-            subfolder="scheduler"
+            subfolder="scheduler",
+            local_files_only=True,
         )
 
         # Create pipeline

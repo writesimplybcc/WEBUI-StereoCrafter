@@ -5,6 +5,10 @@ A unified interface for depth estimation, splatting, inpainting, and merging ope
 This is the main entry point that orchestrates all UI components.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
 import gradio as gr
 import torch
 import dependency.stereocrafter_util as sc_util

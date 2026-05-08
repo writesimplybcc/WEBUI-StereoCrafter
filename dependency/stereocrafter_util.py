@@ -2271,6 +2271,89 @@ def start_ffmpeg_pipe_process(
                 if user_output_crf is None:
                     default_cpu_crf = "24"  # HEVC CRF
 
+    # CRITICAL: Check if NVENC is actually available before using it
+    # CUDA_AVAILABLE only means CUDA runtime is available, not NVENC encoder
+    
+    # Check for manual override (useful for containers with broken NVENC)
+    if os.environ.get("FORCE_CPU_ENCODING", "").lower() in ("1", "true", "yes"):
+        logger.info("FORCE_CPU_ENCODING is enabled. Using CPU encoder.")
+        if "nvenc" in output_codec:
+            if output_codec == "h264_nvenc":
+                output_codec = "libx264"
+            elif output_codec == "hevc_nvenc":
+                output_codec = "libx265"
+    
+    # Run comprehensive NVENC test if codec is still NVENC
+    if "nvenc" in output_codec:
+        import subprocess as _subprocess
+
+        # Test with a frame that matches the actual encode dimensions
+        # This catches dimension-specific NVENC failures
+        _test_frame_w = content_width
+        _test_frame_h = content_height
+
+        _test_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-f", "lavfi",
+            "-i", f"color=c=black:s={_test_frame_w}x{_test_frame_h}:r=1:d=1",
+            "-c:v", output_codec,
+            "-pix_fmt", output_pix_fmt,
+            "-f", "null", "-"
+        ]
+
+        logger.debug(f"NVENC test command: {' '.join(_test_cmd)}")
+
+        try:
+            _result = _subprocess.run(_test_cmd, capture_output=True, timeout=15)
+            _stderr = (_result.stderr or b"").decode('utf-8', errors='ignore')
+            _failed = False
+
+            # Check for ANY sign of NVENC failure
+            if _result.returncode != 0:
+                _failed = True
+                logger.warning(f"NVENC test failed with return code: {_result.returncode}")
+                logger.warning(f"NVENC test stderr: {_stderr[:500]}")
+            elif "No capable devices found" in _stderr:
+                _failed = True
+                logger.warning("NVENC test: No capable devices found")
+            elif "Cannot load" in _stderr and "nvenc" in _stderr.lower():
+                _failed = True
+                logger.warning("NVENC test: Cannot load NVENC library")
+            elif "Cannot initialize" in _stderr and "nvenc" in _stderr.lower():
+                _failed = True
+                logger.warning("NVENC test: Cannot initialize NVENC encoder")
+            elif "Unsupported" in _stderr and ("codec" in _stderr.lower() or "dimension" in _stderr.lower()):
+                _failed = True
+                logger.warning("NVENC test: Unsupported codec or dimension")
+            elif "error" in _stderr.lower() and "nvenc" in _stderr.lower():
+                _failed = True
+                logger.warning(f"NVENC test: NVENC error detected in stderr")
+
+            if _failed:
+                logger.warning(
+                    f"NVENC encoder '{output_codec}' not available. "
+                    f"Falling back to CPU encoder."
+                )
+                logger.info(f"NVENC diagnostic output:\n{_stderr[:1000]}")
+                if output_codec == "h264_nvenc":
+                    output_codec = "libx264"
+                elif output_codec == "hevc_nvenc":
+                    output_codec = "libx265"
+                logger.info(f"Using CPU encoder: {output_codec} with CRF {default_cpu_crf}")
+                
+        except FileNotFoundError:
+            logger.warning("ffmpeg not found, cannot test NVENC. Falling back to CPU encoder.")
+            if output_codec == "h264_nvenc":
+                output_codec = "libx264"
+            elif output_codec == "hevc_nvenc":
+                output_codec = "libx265"
+        except Exception as _e:
+            logger.warning(f"Could not test NVENC: {_e}. Falling back to CPU encoder.")
+            if output_codec == "h264_nvenc":
+                output_codec = "libx264"
+            elif output_codec == "hevc_nvenc":
+                output_codec = "libx265"
+
     ffmpeg_cmd.extend(["-c:v", output_codec])
     if "nvenc" in output_codec:
         ffmpeg_cmd.extend(["-preset", nvenc_preset, "-qp", default_nvenc_cq])

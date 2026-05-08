@@ -572,11 +572,11 @@ class DepthCrafterWebUI(BaseWebUI):
             # Initialize DepthCrafterDemo
             logger.info("Initializing DepthCrafter model...")
             demo = DepthCrafterDemo(
-                unet_path="tencent/DepthCrafter",
-                pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
+                unet_path="weights/DepthCrafter",
+                pre_train_path="weights/stable-video-diffusion-img2vid-xt-1-1",
                 cpu_offload=cpu_offload,
                 use_cudnn_benchmark=use_cudnn_benchmark,
-                local_files_only=use_local_models_only,
+                local_files_only=True,
                 disable_xformers=disable_xformers,
             )
 
