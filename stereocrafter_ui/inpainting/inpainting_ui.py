@@ -750,7 +750,16 @@ class InpaintingWebUI:
                         value=self.app_config.get("enable_color_transfer", True),
                         info="Adjusts inpainted colors to match original footage. Adds ~15-20 seconds per 127 frames (optimized). Recommended for final renders."
                     )
-            
+
+            # Hugging Face Authentication
+            with gr.Group():
+                gr.Markdown("### Hugging Face Authentication")
+                hf_token = gr.Textbox(
+                    label="Hugging Face Token",
+                    value=os.environ.get("HF_TOKEN", ""),
+                    info="Enter your Hugging Face access token for downloading gated models like Stable Video Diffusion."
+                )
+
             # Progress Section
             with gr.Group():
                 gr.Markdown("### Progress")
@@ -761,14 +770,9 @@ class InpaintingWebUI:
                 )
                 batch_progress = gr.Textbox(label="Batch Progress", value="0/0", interactive=False)
 
-            # Hugging Face Authentication
-            with gr.Group():
-                gr.Markdown("### Hugging Face Authentication")
-                hf_token = gr.Textbox(
-                    label="Hugging Face Token",
-                    value=os.environ.get("HF_TOKEN", ""),
-                    info="Enter your Hugging Face access token for downloading gated models like Stable Video Diffusion."
-                )
+            # Logs Tab
+            with gr.Tab("Live Logs"):
+                logs_textbox = gr.Textbox(label="Logs", value="Ready\n", lines=20, interactive=False)
 
             # Control Buttons
             with gr.Row():
@@ -822,8 +826,8 @@ class InpaintingWebUI:
             ]
             
             # All output components
-            all_outputs = [status_label, progress_bar, batch_progress, video_name, video_res, 
-                          video_frames, video_overlap, video_bias, start_button, stop_button]
+            all_outputs = [status_label, progress_bar, batch_progress, video_name, video_res,
+                          video_frames, video_overlap, video_bias, start_button, stop_button, logs_textbox]
 
             # Start processing
             start_button.click(
@@ -976,6 +980,7 @@ class InpaintingWebUI:
         # Poll for progress updates
         import time
         last_status = "🚀 Processing started..."
+        last_logs = "🚀 Processing started...\n"
         last_progress = 0
         last_batch = "0/0"
         last_video_name = "N/A"
@@ -1004,6 +1009,8 @@ class InpaintingWebUI:
                     
                     if msg_type == "status":
                         last_status = msg_value
+                    elif msg_type == "logs":
+                        last_logs += msg_value + "\n"
                     elif msg_type == "progress":
                         last_progress = msg_value
                     elif msg_type == "batch_progress":
@@ -1028,7 +1035,7 @@ class InpaintingWebUI:
                 # Yield current state
                 yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
                       last_video_frames, last_video_overlap, last_video_bias,
-                      gr.update(interactive=False), gr.update(interactive=True))
+                      gr.update(interactive=False), gr.update(interactive=True), last_logs)
             
             time.sleep(0.1)  # Poll every 100ms
         
@@ -1056,8 +1063,8 @@ class InpaintingWebUI:
                 break
         
         return (last_status, last_progress, last_batch, last_video_name, last_video_res,
-               last_video_frames, last_video_overlap, last_video_bias,
-               gr.update(interactive=True), gr.update(interactive=False))
+                last_video_frames, last_video_overlap, last_video_bias,
+                gr.update(interactive=True), gr.update(interactive=False), last_logs)
 
     def stop_processing(self):
         """Stop processing"""
@@ -1074,6 +1081,7 @@ class InpaintingWebUI:
         try:
             # Load pipeline
             self.progress_queue.put(("status", "Loading inpainting pipeline..."))
+            self.progress_queue.put(("logs", "Loading inpainting pipeline..."))
             
             # Use local weights loader (loads StereoCrafter UNet without subfolder)
             svd_path = os.path.abspath("./weights/stable-video-diffusion-img2vid-xt-1-1")
@@ -1095,8 +1103,31 @@ class InpaintingWebUI:
                 self.progress_queue.put(("batch_progress", "0/0"))
                 return
 
+            # Analyze videos for complexity and sort (simple videos first)
+            video_metadata = []
+            for video_path in input_videos:
+                try:
+                    info = get_video_stream_info(video_path)
+                    width = info['width']
+                    height = info['height']
+                    duration = info['duration']
+                    fps = info['fps']
+                    num_frames = int(fps * duration)
+                    resolution_factor = (width * height) / (1920 * 1080)
+                    frame_factor = num_frames / 127
+                    complexity = resolution_factor * frame_factor
+                    video_metadata.append((video_path, complexity))
+                except Exception as e:
+                    logger.warning(f"Could not get metadata for {video_path}: {e}. Assuming low complexity.")
+                    video_metadata.append((video_path, 1.0))
+
+            # Sort by complexity ascending (simple videos processed first)
+            video_metadata.sort(key=lambda x: x[1])
+            input_videos = [v[0] for v in video_metadata]
+
             total_videos = len(input_videos)
-            self.progress_queue.put(("status", f"Processing {total_videos} videos..."))
+            self.progress_queue.put(("status", f"Processing {total_videos} videos (sorted by complexity)..."))
+            self.progress_queue.put(("logs", f"Processing {total_videos} videos (sorted by complexity)..."))
             self.progress_queue.put(("batch_progress", f"0/{total_videos}"))
 
             processed_count = 0
@@ -1109,6 +1140,7 @@ class InpaintingWebUI:
 
                 basename = os.path.basename(video_path)
                 self.progress_queue.put(("status", f"Processing {idx+1}/{total_videos}: {basename}"))
+                self.progress_queue.put(("logs", f"Processing {idx+1}/{total_videos}: {basename}"))
                 self.progress_queue.put(("batch_progress", f"{idx}/{total_videos}"))
                 
                 # Update video info
@@ -1152,6 +1184,7 @@ class InpaintingWebUI:
                 self.progress_queue.put(("status", "❌ Processing stopped."))
             else:
                 self.progress_queue.put(("status", f"✅ Batch completed! ({processed_count}/{total_videos} successful)"))
+                self.progress_queue.put(("logs", f"✅ Batch completed! ({processed_count}/{total_videos} successful)"))
             self.progress_queue.put(("progress", 100))
             self.progress_queue.put(("batch_progress", f"{total_videos}/{total_videos}"))
             
@@ -1373,6 +1406,7 @@ class InpaintingWebUI:
 
             # 5. Finalization (Color Transfer, Blending, Hi-Res)
             self.progress_queue.put(("status", f"Finalizing {base_video_name}..."))
+            self.progress_queue.put(("logs", f"Finalizing {base_video_name}..."))
             final_output = self._finalize_output_frames(
                 inpainted_frames=frames_output_final,
                 mask_frames=frames_mask_original_unpadded_processed,
@@ -1390,6 +1424,7 @@ class InpaintingWebUI:
 
             # 6. Encoding - OPTIMIZED: Use NVENC GPU encoding
             self.progress_queue.put(("status", f"Encoding {base_video_name}..."))
+            self.progress_queue.put(("logs", f"Encoding {base_video_name}..."))
             self.progress_queue.put(("progress", 92))  # 92% at start of encoding
             
             try:

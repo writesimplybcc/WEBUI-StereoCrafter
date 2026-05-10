@@ -1085,8 +1085,8 @@ class InpaintingGUI(ThemedTk):
         frames_mask_processed_unpadded_original_length = current_processed_mask[:num_frames_original].clone()
 
         # --- Pad for Tiling (for pipeline input) ---
-        frames_warpped_padded = pad_for_tiling(frames_warpped_normalized, tile_num, tile_overlap=(128, 128))
-        frames_mask_padded = pad_for_tiling(current_processed_mask, tile_num, tile_overlap=(128, 128))
+        frames_warpped_padded = pad_for_tiling(frames_warpped_normalized, tile_num, tile_overlap=(64, 64))
+        frames_mask_padded = pad_for_tiling(current_processed_mask, tile_num, tile_overlap=(64, 64))
         
         padded_H, padded_W = frames_warpped_padded.shape[2], frames_warpped_padded.shape[3]
 
