@@ -6,7 +6,7 @@
     "_estimated_vram_usage": "7-9 GB",
     
     "input_folder": "./output_splatted",
-    "output_folder": "./completed_output",
+    "output_folder": "./output_inpainted",
     "hires_blend_folder": "./output_splatted_hires",
     
     "num_inference_steps": 6,

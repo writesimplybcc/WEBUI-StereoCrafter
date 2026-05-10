@@ -12,7 +12,7 @@ if [ ! -f "$DB_FILE" ]; then
     filebrowser config init --database "$DB_FILE"
     filebrowser config set --address 0.0.0.0 --database "$DB_FILE"
     filebrowser config set --port 8080 --database "$DB_FILE"
-    filebrowser config set --root /workspace/StereoCrafter --database "$DB_FILE"
+    filebrowser config set --root /workspace/WEBUI-StereoCrafter --database "$DB_FILE"
     filebrowser config set --auth.method=json --database "$DB_FILE"
     filebrowser users add "${FB_USERNAME:-admin}" "${FB_PASSWORD:-adminadmin12}" --perm.admin --database "$DB_FILE"
 else

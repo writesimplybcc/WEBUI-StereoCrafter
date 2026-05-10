@@ -7,6 +7,7 @@ This is the main entry point that orchestrates all UI components.
 
 import sys
 import os
+import argparse
 sys.path.insert(0, os.path.dirname(__file__))
 
 import gradio as gr
@@ -74,25 +75,31 @@ class CombinedWebUI:
                         gr.Markdown("### Current File Manager")
                         self.file_manager_gui.create_interface()
                     with gr.Column():
-                        gr.Markdown("### File Browser (External)")
-                        gr.Markdown("File Browser runs on a separate port. Click below to access:")
-                        filebrowser_url = "http://localhost:8080"  # Adjust port as needed
-                        gr.Markdown(f"[Open File Browser]({filebrowser_url})")
-                        gr.Button("🔗 Launch File Browser", link=filebrowser_url)
+                         gr.Markdown("### File Browser (External)")
+                         gr.Markdown("File Browser runs on a separate port. Click below to access:")
+                         filebrowser_url = "http://localhost:8080"  # Adjust port as needed
+                         gr.Markdown(f"[Open File Browser]({filebrowser_url})")
+                         gr.Button("🔗 Launch File Browser", link=filebrowser_url)
 
         return interface
 
 
-def launch():
+def launch(share=False, server_name="0.0.0.0", server_port=7860):
     """Launch the combined WebUI"""
     import os
     os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
     app = CombinedWebUI()
     interface = app.create_interface()
-    interface.launch(share=False, server_name="0.0.0.0", server_port=7860)
+    interface.launch(share=share, server_name=server_name, server_port=server_port)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Launch StereoCrafter WebUI")
+    parser.add_argument("--share", action="store_true", help="Create a public link")
+    parser.add_argument("--server-name", default="0.0.0.0", help="Server name")
+    parser.add_argument("--server-port", type=int, default=7860, help="Server port")
+    args = parser.parse_args()
+
     # Set the module-level CUDA_AVAILABLE flag
     sc_util.CUDA_AVAILABLE = check_cuda_availability()
     print(f"[DEBUG] CUDA_AVAILABLE set to: {sc_util.CUDA_AVAILABLE}")
@@ -111,4 +118,4 @@ if __name__ == "__main__":
     else:
         print("[DEBUG] CUDA not available.")
     
-    launch()
+    launch(share=args.share, server_name=args.server_name, server_port=args.server_port)

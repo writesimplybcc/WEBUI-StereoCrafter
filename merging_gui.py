@@ -105,7 +105,7 @@ def apply_shadow_blur(mask: torch.Tensor, shift_per_step: int, start_opacity: fl
 class MergingGUI(ThemedTk):
     # --- Centralized Default Settings ---
     APP_DEFAULTS = {
-        "inpainted_folder": "./completed_output",
+        "inpainted_folder": "./output_inpainted",
         "original_folder": "./input_source_clips",
         "mask_folder": "./output_splatted/hires",
         "output_folder": "./final_videos",

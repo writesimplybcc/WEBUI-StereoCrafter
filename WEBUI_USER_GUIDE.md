@@ -45,7 +45,7 @@ WEBUI-StereoCrafter/
 ├── output_splatted/             # Step 2 output
 │   ├── hires/                   # Hi-res splatted (4-panel)
 │   └── lowres/                  # Low-res splatted (4-panel)
-├── completed_output/            # Step 3 output (inpainted)
+├── output_inpainted/            # Step 3 output (inpainted)
 ├── final_videos/                # Step 4 output (merged)
 └── input_source_clips/
     └── finished/                # Originals (scanned for Hi-Res blending)
@@ -225,7 +225,7 @@ python webui.py  →  Inpainting tab
 
 ### Workflow
 1. Select **Input Folder** (`./output_splatted/lowres` or `./output_splatted/hires`)
-2. Select **Output Folder** (defaults to `./completed_output`)
+2. Select **Output Folder** (defaults to `./output_inpainted`)
 3. Select **Hi-Res Blend Folder** (optional, for upscaling)
 4. Adjust settings (see below)
 5. Click **Start Processing**
@@ -420,11 +420,11 @@ Step 2: Splatting (2 min on RTX 4090)
 
 Step 3: Inpainting (5 min on RTX 4090)
   Input:  output_splatted/lowres/MyClip_1080_splatted4.mp4
-  Output: completed_output/MyClip_1080_inpainted_right_eye.mp4
+  Output: output_inpainted/MyClip_1080_inpainted_right_eye.mp4
 
 Step 4: Merging (1 min on RTX 4090)
   Input:  output_splatted/lowres/MyClip_1080_splatted4.mp4 (left eye)
-          completed_output/MyClip_1080_inpainted_right_eye.mp4 (right eye)
+          output_inpainted/MyClip_1080_inpainted_right_eye.mp4 (right eye)
   Output: final_videos/MyClip_1080_merged.mp4
 
 Total Time: ~23 minutes
@@ -447,11 +447,11 @@ Step 2: Splatting (5 min)
 Step 3: Inpainting (10 min)
   Input:  output_splatted/lowres/MyClip_4K_splatted4.mp4
   Settings: Tiles 4, Chunk 8, Overlap 3
-  Output: completed_output/MyClip_4K_inpainted_right_eye.mp4
+  Output: output_inpainted/MyClip_4K_inpainted_right_eye.mp4
 
 Step 4: Merging (2 min)
   Input:  output_splatted/lowres/MyClip_4K_splatted4.mp4 (left eye)
-          completed_output/MyClip_4K_inpainted_right_eye.mp4 (right eye)
+          output_inpainted/MyClip_4K_inpainted_right_eye.mp4 (right eye)
   Output: final_videos/MyClip_4K_merged.mp4
 
 Total Time: ~37 minutes

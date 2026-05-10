@@ -197,6 +197,10 @@ fi
 
 cd .. || { echo "ERROR: Cannot cd back to root"; exit 1; }
 
+# Ensure output folders exist
+echo "Creating output folders if missing..."
+mkdir -p input_source_clips output_depthmaps output_splatted output_inpainted final_videos
+
 echo ""
 echo "=========================================="
 echo "Setup Complete!"
@@ -206,7 +210,7 @@ echo "Startup log saved to: /tmp/stereocrafter-startup.log"
 echo ""
 echo "Starting StereoCrafter WEBUI..."
 echo "  Access URL: http://0.0.0.0:7860"
-echo "  Or use the Runpod provided URL"
+echo "  Or use the VAST.ai provided URL"
 echo ""
 
 # Start File Manager (filebrowser) in background
@@ -225,4 +229,4 @@ echo ""
 # Start the application (this should keep running)
 echo "Launching webui.py..."
 export PYTHONPATH="/workspace/WEBUI-StereoCrafter:$PYTHONPATH"
-python webui.py --share --server-name 0.0.0.0 --server-port 7860
+python webui.py

@@ -58,7 +58,7 @@ class InpaintingGUI(ThemedTk):
         self.debug_mode_var = tk.BooleanVar(value=self.app_config.get("debug_mode_enabled", False))
 
         self.input_folder_var = tk.StringVar(value=self.app_config.get("input_folder", "./output_splatted"))
-        self.output_folder_var = tk.StringVar(value=self.app_config.get("output_folder", "./completed_output"))
+        self.output_folder_var = tk.StringVar(value=self.app_config.get("output_folder", "./output_inpainted"))
         self.num_inference_steps_var = tk.StringVar(value=str(self.app_config.get("num_inference_steps", 5)))
         self.tile_num_var = tk.StringVar(value=str(self.app_config.get("tile_num", 2)))
         self.frames_chunk_var = tk.StringVar(value=str(self.app_config.get("frames_chunk", 23)))

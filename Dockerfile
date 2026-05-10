@@ -28,7 +28,7 @@ COPY dependency/ ./dependency/
 
 
 #for development. to quick test run
-COPY output_inpainted/ ./completed_output/
+COPY output_inpainted/ ./output_inpainted/
 COPY final_videos/ ./final_videos/
 COPY input_source_clips/ ./input_source_clips/
 COPY output_depthmaps/ ./output_depthmaps/
