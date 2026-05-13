@@ -1645,12 +1645,12 @@ def get_vram_config(force_refresh: bool = False):
         logger.info(f"✓ Selected: RTX 3060 12GB tier")
         logger.info(f"  window_size: 100, overlap: 6")
         config = {
-            'decode_chunk_size': 14,   # User-optimized for speed
+            'decode_chunk_size': 6,    # Conservative for 12GB GPUs to avoid OOM
             'window_size': 100,
             'overlap': 6,            # Balanced for speed and quality (user-optimized)
-            'frames_chunk': 24,      # User-optimized for speed
-            'batch_chunk_size': 16,
-            'processing_chunk_size': 80
+            'frames_chunk': 16,      # Reduced for stability
+            'batch_chunk_size': 12,
+            'processing_chunk_size': 60
         }
     elif 'rtx 3060' in gpu_name or effective_vram_gb < 8:
         logger.info(f"✓ Selected: ULTRA-CONSERVATIVE tier (< 8GB effective VRAM)")

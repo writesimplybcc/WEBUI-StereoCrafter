@@ -405,7 +405,8 @@ class DepthCrafterDemo:
                            guidance_scale: float, num_denoising_steps: int,
                            pipe_call_window_size: int, pipe_call_overlap: int,
                            segment_job_info: Optional[dict],
-                           actual_processed_height: int, actual_processed_width: int # <--- RENAMED
+                           actual_processed_height: int, actual_processed_width: int, # <--- RENAMED
+                           enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
                            ) -> np.ndarray:
         current_pipe_window_for_call = pipe_call_window_size
         current_pipe_overlap_for_call = pipe_call_overlap
@@ -419,19 +420,26 @@ class DepthCrafterDemo:
             current_pipe_window_for_call = min(current_pipe_window_for_call, 16)
             current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, 4)
 
-        _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_frames_to_process.shape[1]}x{actual_frames_to_process.shape[2]}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}")
-        torch.cuda.empty_cache()
-        with torch.inference_mode():
-            res = self.pipe(
-                actual_frames_to_process,
-                height=actual_processed_height, # <--- USE RENAMED PARAM
-                width=actual_processed_width,   # <--- USE RENAMED PARAM
-                output_type="np",
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_denoising_steps,
-                window_size=current_pipe_window_for_call,
-                overlap=current_pipe_overlap_for_call,
-            ).frames[0]
+        _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_frames_to_process.shape[1]}x{actual_frames_to_process.shape[2]}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}, Tiling: {enable_tiling}")
+
+        if enable_tiling and (actual_processed_height > tile_size or actual_processed_width > tile_size):
+            _logger.info(f"Applying spatial tiling: Tile size {tile_size}, Overlap {tile_overlap}")
+            res = self._perform_tiled_inference(actual_frames_to_process, guidance_scale, num_denoising_steps,
+                                                current_pipe_window_for_call, current_pipe_overlap_for_call,
+                                                actual_processed_height, actual_processed_width, tile_size, tile_overlap)
+        else:
+            torch.cuda.empty_cache()
+            with torch.inference_mode():
+                res = self.pipe(
+                    actual_frames_to_process,
+                    height=actual_processed_height,
+                    width=actual_processed_width,
+                    output_type="np",
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_denoising_steps,
+                    window_size=current_pipe_window_for_call,
+                    overlap=current_pipe_overlap_for_call,
+                ).frames[0]
         _logger.debug(f"Inference completed. Result shape: {res.shape}")
 
         # Clear GPU memory to prevent OOM in subsequent operations
@@ -444,6 +452,83 @@ class DepthCrafterDemo:
             res = res.sum(-1) / res.shape[-1]
             _logger.debug(f"Inference result (RGB/RGBA) averaged to grayscale. Final shape: {res.shape}")
         return res
+
+    def _perform_tiled_inference(self, frames: np.ndarray, guidance_scale: float, num_denoising_steps: int,
+                                 window_size: int, overlap: int, height: int, width: int, tile_size: int, tile_overlap: int) -> np.ndarray:
+        """Perform inference with spatial tiling for high resolutions."""
+        import torch
+
+        # Ensure tile_size is multiple of 64 for model compatibility
+        tile_size = (tile_size // 64) * 64
+        if tile_size < 64:
+            tile_size = 64
+
+        # Calculate number of tiles
+        stride = tile_size - tile_overlap
+        num_tiles_h = (height + stride - 1) // stride
+        num_tiles_w = (width + stride - 1) // stride
+
+        _logger.debug(f"Tiling: {num_tiles_h}x{num_tiles_w} tiles, size {tile_size}, stride {stride}")
+
+        # Initialize output array
+        depth_output = np.zeros((frames.shape[0], height, width), dtype=np.float32)
+        weight_mask = np.zeros((height, width), dtype=np.float32)
+
+        for i in range(num_tiles_h):
+            for j in range(num_tiles_w):
+                y_start = i * stride
+                x_start = j * stride
+                y_end = min(y_start + tile_size, height)
+                x_end = min(x_start + tile_size, width)
+
+                tile_h = y_end - y_start
+                tile_w = x_end - x_start
+
+                # Extract tile from frames
+                tile_frames = frames[:, y_start:y_end, x_start:x_end]
+
+                # Pad if necessary for model
+                pad_h = tile_size - tile_h
+                pad_w = tile_size - tile_w
+                if pad_h > 0 or pad_w > 0:
+                    tile_frames = np.pad(tile_frames, ((0,0), (0,pad_h), (0,pad_w)), mode='reflect')
+
+                torch.cuda.empty_cache()
+                with torch.inference_mode():
+                    tile_depth = self.pipe(
+                        tile_frames,
+                        height=tile_size,
+                        width=tile_size,
+                        output_type="np",
+                        guidance_scale=guidance_scale,
+                        num_inference_steps=num_denoising_steps,
+                        window_size=window_size,
+                        overlap=overlap,
+                    ).frames[0]
+
+                # Crop padding
+                tile_depth = tile_depth[:, :tile_h, :tile_w]
+
+                # Create weight mask for blending
+                weight = np.ones((tile_h, tile_w), dtype=np.float32)
+                if i > 0:
+                    weight[:tile_overlap, :] *= np.linspace(0.5, 1, tile_overlap)[:, None]
+                if j > 0:
+                    weight[:, :tile_overlap] *= np.linspace(0.5, 1, tile_overlap)[None, :]
+                if i < num_tiles_h - 1:
+                    weight[-tile_overlap:, :] *= np.linspace(1, 0.5, tile_overlap)[:, None]
+                if j < num_tiles_w - 1:
+                    weight[:, -tile_overlap:] *= np.linspace(1, 0.5, tile_overlap)[None, :]
+
+                # Accumulate depth and weights
+                depth_output[:, y_start:y_end, x_start:x_end] += tile_depth * weight[None, :, :]
+                weight_mask[y_start:y_end, x_start:x_end] += weight
+
+        # Normalize by weights
+        weight_mask = np.maximum(weight_mask, 1e-8)
+        depth_output /= weight_mask[None, :, :]
+
+        return depth_output
 
     def _save_segment_npz(self, res: np.ndarray, full_save_path: str, job_specific_metadata: dict) -> bool:
         try:
@@ -593,7 +678,8 @@ class DepthCrafterDemo:
                         segment_job_info: Optional[dict] = None,
                         should_save_intermediate_visuals: bool = False,
                         intermediate_visual_format_to_save: str = "none",
-                        save_final_output_json_config_passed_in: bool = False
+                        save_final_output_json_config_passed_in: bool = False,
+                        enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
                         ) -> Tuple[Optional[str], dict]:
 
         infer_start_time = time.perf_counter()
@@ -641,8 +727,9 @@ class DepthCrafterDemo:
         inference_result = self._perform_inference(
             actual_frames_to_process, guidance_scale, num_denoising_steps,
             pipe_call_window_size, pipe_call_overlap, segment_job_info,
-            actual_processed_h, actual_processed_w
-            )
+            actual_processed_h, actual_processed_w,
+            enable_tiling, tile_size, tile_overlap
+        )
 
         if inference_result is not None and inference_result.ndim >= 3: # Should be (T, H, W)
             job_specific_metadata["processed_height"] = inference_result.shape[1]
@@ -692,12 +779,13 @@ class DepthCrafterDemo:
             video_path_or_frames_or_info: Union[str, np.ndarray, dict],
             num_denoising_steps: int, guidance_scale: float,
             base_output_folder: str, gui_window_size: int, gui_overlap: int,
-            process_length_for_read_full_video: int, target_height: int, target_width: int, 
+            process_length_for_read_full_video: int, target_height: int, target_width: int,
             seed: int, original_video_basename_override: Optional[str] = None,
             segment_job_info_param: Optional[dict] = None,
             keep_intermediate_npz_config: bool = False,
             intermediate_segment_visual_format_config: str = "none",
-            save_final_json_for_this_job_config: bool = False
+            save_final_json_for_this_job_config: bool = False,
+            enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
             ):
         
         video_path_or_info_for_infer_load: Union[str, dict]
@@ -765,7 +853,7 @@ class DepthCrafterDemo:
             frames_array_if_provided=frames_array_input,
             num_denoising_steps=num_denoising_steps, guidance_scale=guidance_scale,
             base_output_folder=base_output_folder,
-            user_target_width=target_width, user_target_height=target_height, 
+            user_target_width=target_width, user_target_height=target_height,
             seed_val=seed,
             original_video_basename=original_basename_for_job,
             process_length_for_read=effective_process_length_for_infer,
@@ -774,7 +862,8 @@ class DepthCrafterDemo:
             segment_job_info=segment_job_info_param,
             should_save_intermediate_visuals=should_save_visuals_for_infer,
             intermediate_visual_format_to_save=intermediate_visual_fmt_for_infer,
-            save_final_output_json_config_passed_in=save_final_json_for_this_job_config
+            save_final_output_json_config_passed_in=save_final_json_for_this_job_config,
+            enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap
         )
         gc.collect(); torch.cuda.empty_cache()
         return save_path, job_metadata_dict

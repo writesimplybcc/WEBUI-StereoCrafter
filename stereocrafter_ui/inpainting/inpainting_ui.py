@@ -619,7 +619,7 @@ class InpaintingWebUI:
             "✓ Reset to default values"
         )
 
-    def create_interface(self):
+    def create_interface(self, hf_token=None):
         """Create the complete Gradio interface"""
         
         with gr.Blocks(title="Inpainting - StereoCrafter") as interface:
@@ -658,16 +658,17 @@ class InpaintingWebUI:
                         with gr.Accordion("⚡ Performance Settings (Advanced)", open=False):
                             gr.Markdown("""
                             **Decode Chunk Size**: Higher values = faster but more VRAM
-                            - RTX 4090/6000 Ada (24-48GB): Use 8-14 (safe) or 14-20 (aggressive)
-                            - RTX 3090/4080 (12-24GB): Use 4-8
-                            - RTX 3060/4060 (8-12GB): Use 2-4
+                            - RTX 5090/6000 Ada (48GB+): Use 14-25 (optimal) or 25+ (maximum performance)
+                            - RTX 4090/5090 (24GB+): Use 8-14 (safe) or 14-20 (aggressive)
+                            - RTX 3090/4080 (12-24GB): Use 4-8 (safe) or 8-12 (aggressive)
+                            - RTX 3060/4060 (8-12GB): Use 2-6 (recommended) or 6-10 (aggressive)
 
-                            ⚠️ **Warning**: Values above 14 may cause OOM (Out of Memory) errors on GPUs with less than 24GB VRAM!
+                            ⚠️ **Warning**: Values above 12 may cause OOM on GPUs with less than 24GB VRAM!
                             """)
                             decode_chunk_size = gr.Slider(
-                                minimum=1, maximum=23, value=int(self.app_config.get("decode_chunk_size", self.vram_defaults['decode_chunk_size'])),
+                                minimum=1, maximum=25, value=int(self.app_config.get("decode_chunk_size", self.vram_defaults['decode_chunk_size'])),
                                 step=1, label="Decode Chunk Size",
-                                info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (VRAM-optimized)"
+                                info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (auto-detected based on GPU VRAM)"
                             )
                         tile_num = gr.Slider(
                             minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 1)),
@@ -677,7 +678,7 @@ class InpaintingWebUI:
                         frames_chunk = gr.Slider(
                             minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", self.vram_defaults['frames_chunk'])),
                             step=1, label="Frames Chunk",
-                            info=f"The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: {self.vram_defaults['frames_chunk']} (VRAM-optimized)"
+                            info=f"The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: {self.vram_defaults['frames_chunk']} (auto-detected based on GPU VRAM)"
                         )
                         process_length = gr.Number(
                             label="Process Length (-1 for all)",
@@ -751,15 +752,6 @@ class InpaintingWebUI:
                         info="Adjusts inpainted colors to match original footage. Adds ~15-20 seconds per 127 frames (optimized). Recommended for final renders."
                     )
 
-            # Hugging Face Authentication
-            with gr.Group():
-                gr.Markdown("### Hugging Face Authentication")
-                hf_token = gr.Textbox(
-                    label="Hugging Face Token",
-                    value=os.environ.get("HF_TOKEN", ""),
-                    info="Enter your Hugging Face access token for downloading gated models like Stable Video Diffusion."
-                )
-
             # Progress Section
             with gr.Group():
                 gr.Markdown("### Progress")
@@ -770,9 +762,7 @@ class InpaintingWebUI:
                 )
                 batch_progress = gr.Textbox(label="Batch Progress", value="0/0", interactive=False)
 
-            # Logs Tab
-            with gr.Tab("Live Logs"):
-                logs_textbox = gr.Textbox(label="Logs", value="Ready\n", lines=20, interactive=False)
+
 
             # Control Buttons
             with gr.Row():
@@ -827,7 +817,7 @@ class InpaintingWebUI:
             
             # All output components
             all_outputs = [status_label, progress_bar, batch_progress, video_name, video_res,
-                          video_frames, video_overlap, video_bias, start_button, stop_button, logs_textbox]
+                          video_frames, video_overlap, video_bias, start_button, stop_button]
 
             # Start processing
             start_button.click(
@@ -905,7 +895,7 @@ class InpaintingWebUI:
     # ==================== PROCESSING METHODS ====================
 
     def start_processing(self, *args, progress=gr.Progress()):
-        """Start batch processing"""
+        """Start batch processing with live logging"""
         # Extract parameters
         (input_folder, output_folder, hires_blend_folder,
          num_inference_steps, decode_chunk_size, tile_num, frames_chunk, frame_overlap,
@@ -926,15 +916,18 @@ class InpaintingWebUI:
             process_length = int(process_length)
 
             if num_inference_steps < 1 or tile_num < 1 or frames_chunk < 1:
-                return ("❌ Error: Invalid parameter values", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
+                yield ("❌ Error: Invalid parameter values", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
                        gr.update(interactive=True), gr.update(interactive=False))
+                return
         except ValueError:
-            return ("❌ Error: Please enter valid numeric values", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
+            yield ("❌ Error: Please enter valid numeric values", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
                    gr.update(interactive=True), gr.update(interactive=False))
+            return
 
         if not os.path.isdir(input_folder):
-            return (f"❌ Error: Input folder '{input_folder}' does not exist", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
+            yield (f"❌ Error: Input folder '{input_folder}' does not exist", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
                    gr.update(interactive=True), gr.update(interactive=False))
+            return
 
         os.makedirs(output_folder, exist_ok=True)
 
@@ -980,7 +973,6 @@ class InpaintingWebUI:
         # Poll for progress updates
         import time
         last_status = "🚀 Processing started..."
-        last_logs = "🚀 Processing started...\n"
         last_progress = 0
         last_batch = "0/0"
         last_video_name = "N/A"
@@ -1009,8 +1001,6 @@ class InpaintingWebUI:
                     
                     if msg_type == "status":
                         last_status = msg_value
-                    elif msg_type == "logs":
-                        last_logs += msg_value + "\n"
                     elif msg_type == "progress":
                         last_progress = msg_value
                     elif msg_type == "batch_progress":
@@ -1035,7 +1025,7 @@ class InpaintingWebUI:
                 # Yield current state
                 yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
                       last_video_frames, last_video_overlap, last_video_bias,
-                      gr.update(interactive=False), gr.update(interactive=True), last_logs)
+                      gr.update(interactive=False), gr.update(interactive=True))
             
             time.sleep(0.1)  # Poll every 100ms
         
@@ -1062,9 +1052,9 @@ class InpaintingWebUI:
             except:
                 break
         
-        return (last_status, last_progress, last_batch, last_video_name, last_video_res,
+        yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
                 last_video_frames, last_video_overlap, last_video_bias,
-                gr.update(interactive=True), gr.update(interactive=False), last_logs)
+                gr.update(interactive=True), gr.update(interactive=False))
 
     def stop_processing(self):
         """Stop processing"""
@@ -1074,7 +1064,8 @@ class InpaintingWebUI:
                 release_cuda_memory()
             except RuntimeError as e:
                 logger.warning(f"Failed to clear CUDA cache: {e}")
-        return "⏹️ Stopping processing...", gr.update(interactive=True), gr.update(interactive=False)
+        return ("⏹️ Stopping processing...", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
+                gr.update(interactive=True), gr.update(interactive=False))
 
     def process_batch(self, params):
         """Main batch processing function"""
@@ -1295,7 +1286,7 @@ class InpaintingWebUI:
 
                 # Input blending - OPTIMIZED: In-place operations where possible
                 if previous_chunk_output is not None and overlap > 0:
-                    overlap_actual = min(overlap, input_slice.shape[0])
+                    overlap_actual = min(overlap, input_slice.shape[0], previous_chunk_output.shape[0])
                     prev_overlap = previous_chunk_output[-overlap_actual:]
 
                     if current_blend > 0:
@@ -1764,6 +1755,8 @@ class InpaintingWebUI:
                 import gc
                 gc.collect()
                 logger.info(f"Hi-Res blending complete. VRAM: {torch.cuda.memory_allocated(0) / 1024**3:.1f} GB used" if torch.cuda.is_available() else "Hi-Res blending complete.")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # --- Color Transfer ---
             if params['enable_color_transfer']:

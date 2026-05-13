@@ -438,13 +438,14 @@ class SplatterWebUI:
         self.enable_full_res = True
         self.enable_low_res = True
         # Initialize with default values, but these will be updated when a video is selected
-        self.pre_res_width = int(self.app_config.get("pre_res_width", "1280"))
-        self.pre_res_height = int(self.app_config.get("pre_res_height", "720"))
+        self.pre_res_width = int(self.app_config.get("pre_res_width", "640"))
+
+        self.pre_res_height = int(self.app_config.get("pre_res_height", "360"))
         self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", defaults["BATCH_SIZE_LOW"]))
-        
-        # Initialize with default values, but these will be updated when a video is selected
-        self.pre_res_width = int(self.app_config.get("pre_res_width", "1280"))
-        self.pre_res_height = int(self.app_config.get("pre_res_height", "720"))
+
+        # Initialize with conservative defaults - will be auto-detected when video is selected
+        self.pre_res_width = int(self.app_config.get("pre_res_width", "640"))
+        self.pre_res_height = int(self.app_config.get("pre_res_height", "360"))
         self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", defaults["BATCH_SIZE_LOW"]))
         
         # Initialize with default values but will be updated when video is selected
@@ -4262,13 +4263,13 @@ class SplatterWebUI:
                                 label="Width",
                                 value=self.pre_res_width,
                                 precision=0,
-                                info="The target width for the low-resolution output. The input video and depth maps will be resized to this width for the low-resolution pass."
+                                info="The target width for the low-resolution output. The input video and depth maps will be resized to this width for the low-resolution pass. Should be smaller than input resolution to avoid OOM errors."
                             )
                             self.pre_res_height_comp = gr.Number(
                                 label="Height",
                                 value=self.pre_res_height,
                                 precision=0,
-                                info="The target height for the low-resolution output. The input video and depth maps will be resized to this height for the low-resolution pass."
+                                info="The target height for the low-resolution output. The input video and depth maps will be resized to this height for the low-resolution pass. Should be smaller than input resolution to avoid OOM errors."
                             )
                     
                     # Splatting & Output Settings
@@ -4691,13 +4692,17 @@ class SplatterWebUI:
         return interface
     def auto_detect_low_res_from_input(self, source_folder):
         """
-        Auto-detect input video resolution and set appropriate low-res settings.
-        
-        Scaling logic:
-        - 4K (3840×2160) → Low-res: 1920×1080 (1080p)
-        - 1440p (2560×1440) → Low-res: 1280×720 (720p)
-        - 1080p (1920×1080) → Low-res: 1280×720 (720p)
-        - 720p (1280×720) → Low-res: 960×540 (540p)
+        Auto-detect input video resolution and set appropriate low-res settings based on GPU VRAM.
+
+        VRAM-aware scaling logic:
+        High VRAM (24GB+): Standard scaling for best quality
+        - 4K → 1080p, 1440p → 720p, 1080p → 720p, 720p → 540p, SD → 2/3 scale
+
+        Medium VRAM (12-24GB): Conservative scaling to prevent OOM
+        - 4K → 720p, 1440p → 540p, 1080p → 540p, 720p → 360p, SD → 1/2 scale
+
+        Low VRAM (<12GB): Very conservative scaling for stability
+        - HD+ → 360p, 720p → 270p, SD → 1/3 scale
         """
         if not source_folder or not os.path.isdir(source_folder):
             return gr.update(), gr.update(), "⚠️ Invalid source folder"
@@ -4728,32 +4733,75 @@ class SplatterWebUI:
             if width <= 0 or height <= 0:
                 return gr.update(), gr.update(), "❌ Invalid resolution detected"
 
-            # Determine low-res settings based on input resolution
-            if width >= 3840 and height >= 2160:
-                # 4K input → 1080p low-res
-                low_res_width = 1920
-                low_res_height = 1080
-                resolution_name = "4K"
-            elif width >= 2560 and height >= 1440:
-                # 1440p input → 720p low-res
-                low_res_width = 1280
-                low_res_height = 720
-                resolution_name = "1440p"
-            elif width >= 1920 and height >= 1080:
-                # 1080p input → 720p low-res
-                low_res_width = 1280
-                low_res_height = 720
-                resolution_name = "1080p"
-            elif width >= 1280 and height >= 720:
-                # 720p input → 540p low-res
-                low_res_width = 960
-                low_res_height = 540
-                resolution_name = "720p"
+            # Get GPU VRAM to adjust scaling aggressiveness
+            try:
+                if torch.cuda.is_available():
+                    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    gpu_name = torch.cuda.get_device_name(0).lower()
+                else:
+                    total_vram_gb = 0
+                    gpu_name = "cpu"
+            except:
+                total_vram_gb = 8  # Conservative fallback
+                gpu_name = "unknown"
+
+            # Determine scaling aggressiveness based on VRAM
+            if total_vram_gb >= 24:
+                # High VRAM GPUs (RTX 4090, A6000, etc.)
+                scaling_mode = "aggressive"
+                logger.info(f"High VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using aggressive scaling")
+            elif total_vram_gb >= 12:
+                # Medium VRAM GPUs (RTX 3060 12GB, RTX 3080, etc.)
+                scaling_mode = "conservative"
+                logger.info(f"Medium VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using conservative scaling")
             else:
-                # Unknown/SD input → use 2/3 of original
-                low_res_width = max(640, (width * 2) // 3)
-                low_res_height = max(360, (height * 2) // 3)
-                resolution_name = f"{width}×{height}"
+                # Low VRAM GPUs (<12GB)
+                scaling_mode = "very_conservative"
+                logger.info(f"Low VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using very conservative scaling")
+
+            # Determine low-res settings based on input resolution and GPU VRAM
+            if scaling_mode == "aggressive":
+                # High VRAM: Use standard scaling
+                if width >= 3840 and height >= 2160:
+                    low_res_width, low_res_height, resolution_name = 1920, 1080, "4K"
+                elif width >= 2560 and height >= 1440:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "1440p"
+                elif width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "1080p"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 960, 540, "720p"
+                else:
+                    low_res_width = max(640, (width * 2) // 3)
+                    low_res_height = max(360, (height * 2) // 3)
+                    resolution_name = f"{width}×{height}"
+
+            elif scaling_mode == "conservative":
+                # Medium VRAM: More conservative scaling
+                if width >= 3840 and height >= 2160:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "4K"
+                elif width >= 2560 and height >= 1440:
+                    low_res_width, low_res_height, resolution_name = 960, 540, "1440p"
+                elif width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 960, 540, "1080p"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 640, 360, "720p"
+                else:
+                    # Small inputs: use 1/2 scale for conservative GPUs
+                    low_res_width = max(320, width // 2)
+                    low_res_height = max(240, height // 2)
+                    resolution_name = f"{width}×{height}"
+
+            else:  # very_conservative
+                # Low VRAM: Very aggressive downscaling
+                if width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 640, 360, "HD"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 480, 270, "720p"
+                else:
+                    # Very small inputs: 1/3 scale for low VRAM
+                    low_res_width = max(240, width // 3)
+                    low_res_height = max(180, height // 3)
+                    resolution_name = f"{width}×{height}"
 
             # Ensure dimensions are even (required by codecs)
             if low_res_width % 2 != 0:
@@ -4761,8 +4809,8 @@ class SplatterWebUI:
             if low_res_height % 2 != 0:
                 low_res_height += 1
 
-            logger.info(f"Auto-detected {resolution_name} input ({width}x{height}) → Setting low-res to {low_res_width}x{low_res_height}")
-            return low_res_width, low_res_height, f"✅ {resolution_name} detected → Low-res: {low_res_width}×{low_res_height}"
+            logger.info(f"Auto-detected {resolution_name} input ({width}x{height}) on {scaling_mode} GPU → Setting low-res to {low_res_width}x{low_res_height}")
+            return low_res_width, low_res_height, f"✅ {resolution_name} detected ({scaling_mode} GPU) → Low-res: {low_res_width}×{low_res_height}"
 
         except Exception as e:
             logger.error(f"Error auto-detecting resolution: {e}")

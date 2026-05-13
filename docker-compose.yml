@@ -32,6 +32,7 @@ services:
       - ./weights:/workspace/WEBUI-StereoCrafter/weights
 
       # Mount input/output folders for easy access
+      - ./source_video:/workspace/WEBUI-StereoCrafter/source_video
       - ./input_source_clips:/workspace/WEBUI-StereoCrafter/input_source_clips
       - ./output_depthmaps:/workspace/WEBUI-StereoCrafter/output_depthmaps
       - ./output_splatted:/workspace/WEBUI-StereoCrafter/output_splatted

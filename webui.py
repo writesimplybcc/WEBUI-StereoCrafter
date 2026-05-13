@@ -57,6 +57,15 @@ class CombinedWebUI:
             gpu_info = get_gpu_info()
             gr.Markdown(f"## {gpu_info}")
 
+            # Global Hugging Face Authentication
+            with gr.Group():
+                gr.Markdown("### Hugging Face Authentication")
+                hf_token = gr.Textbox(
+                    label="Hugging Face Token",
+                    value=os.environ.get("HF_TOKEN", ""),
+                    info="Enter your Hugging Face access token for downloading gated models like Stable Video Diffusion."
+                )
+
             with gr.Tab("DepthCrafter"):
                 self.depthcrafter_gui.create_interface()
 
@@ -64,7 +73,7 @@ class CombinedWebUI:
                 self.splatting_gui.create_interface()
 
             with gr.Tab("Inpainting"):
-                self.inpainting_gui.create_interface()
+                self.inpainting_gui.create_interface(hf_token)
 
             with gr.Tab("Merging"):
                 self.merging_gui.create_interface()

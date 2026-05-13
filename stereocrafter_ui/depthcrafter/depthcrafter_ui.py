@@ -219,15 +219,22 @@ class DepthCrafterWebUI(BaseWebUI):
             value=False,
             info="If checked, the model will only attempt to load files from the local Hugging Face cache and will NOT attempt to connect to the Hugging Face Hub for verification or download. This can significantly speed up startup time if models are already cached locally. If a model is not found in the local cache, an error will occur."
         )
+        # Resolution Preset Checkboxes
+        self.resolution_preset = gr.Radio(
+            ["Custom", "720p (1280x720)", "1080p (1920x1080)", "4K (3840x2160)"],
+            value="Custom",
+            label="Resolution Preset",
+            info="Select a preset resolution or choose 'Custom' to use manual sliders below. Presets auto-set width/height to multiples of 64."
+        )
         self.target_height = gr.Slider(
-            100, 2160, value=1080, step=1, 
+            100, 2160, value=1080, step=1,
             label="Target Height",
-            info="Set your vertical resolution, must be a multple of 64."
+            info="Set your vertical resolution, must be a multiple of 64. Auto-set by presets."
         )
         self.target_width = gr.Slider(
-            100, 3840, value=1920, step=1, 
+            100, 3840, value=1920, step=1,
             label="Target Width",
-            info="Set your Horizonat resolution, must be a multple of 64."
+            info="Set your horizontal resolution, must be a multiple of 64. Auto-set by presets."
         )
         self.enable_dual_output_robust_norm = gr.Checkbox(
             label="Enable Secondary Output", 
@@ -261,6 +268,28 @@ class DepthCrafterWebUI(BaseWebUI):
         )
         self.is_depth_far_black = gr.Checkbox(label="Is Depth Far Black", value=True)
         self.dark_mode_var = gr.Checkbox(label="Dark Mode", value=False)
+        # Tiling controls
+        self.enable_tiling = gr.Checkbox(
+            label="Enable Tiling (for High-Res Processing)",
+            value=False,
+            info="Enable spatial tiling to process high-resolution depth maps by splitting frames into smaller tiles. Reduces VRAM usage for 4K/1080p outputs."
+        )
+        self.tile_size = gr.Slider(
+            256, 1024, value=512, step=64,
+            label="Tile Size",
+            info="Size of each tile (width and height) for tiling. Smaller tiles use less VRAM but increase processing time."
+        )
+        self.tile_overlap = gr.Slider(
+            64, 256, value=128, step=32,
+            label="Tile Overlap",
+            info="Overlap between tiles in pixels. Higher overlap improves blending quality but increases computation."
+        )
+        self.tiling_suggestion = gr.Textbox(
+            label="Tiling Suggestion (Auto-Generated)",
+            value="Detect VRAM on start to see suggestions.",
+            interactive=False,
+            info="Displays auto-suggested tiling parameters based on your GPU VRAM and system RAM."
+        )
 
         # Auto-detect GPU for xformers and cudnn defaults
         try:
@@ -304,14 +333,19 @@ class DepthCrafterWebUI(BaseWebUI):
             # Left Column
             with gr.Column():
                 with gr.Accordion("Main Parameters", open=True):
-                    self.guidance_scale.render()
-                    self.inference_steps.render()
+                    self.resolution_preset.render()
                     self.target_width.render()
                     self.target_height.render()
+                    self.guidance_scale.render()
+                    self.inference_steps.render()
                     self.seed.render()
                     self.cpu_offload.render()
                     self.use_cudnn_benchmark.render()
                     self.disable_xformers_var.render()
+                    self.enable_tiling.render()
+                    self.tile_size.render()
+                    self.tile_overlap.render()
+                    self.tiling_suggestion.render()
 
                 with gr.Accordion("Merged Output Options", open=False):
                     self.keep_intermediate_npz_var.render()
@@ -400,11 +434,29 @@ class DepthCrafterWebUI(BaseWebUI):
             outputs=[self.input_dir_or_file_var]
         )
 
+        # Event handlers for resolution presets
+        def update_resolution(preset):
+            if preset == "720p (1280x720)":
+                return 1280, 720
+            elif preset == "1080p (1920x1080)":
+                return 1920, 1080
+            elif preset == "4K (3840x2160)":
+                return 3840, 2160
+            else:  # Custom
+                return gr.update(), gr.update()  # Keep current values
+
+        self.resolution_preset.change(
+            fn=update_resolution,
+            inputs=[self.resolution_preset],
+            outputs=[self.target_width, self.target_height]
+        )
+
         # Event handlers
         start_btn.click(
             fn=self.start_processing,
             inputs=[
                 self.input_dir_or_file_var, self.output_dir,
+                self.resolution_preset, self.target_width, self.target_height,
                 self.guidance_scale, self.inference_steps, self.seed,
                 self.cpu_offload, self.use_cudnn_benchmark,
                 self.process_length, self.target_fps,
@@ -417,11 +469,11 @@ class DepthCrafterWebUI(BaseWebUI):
                 self.merge_norm_high_perc_var, self.keep_intermediate_npz_var,
                 self.min_frames_to_keep_npz_var, self.keep_intermediate_segment_visual_format_var,
                 self.merge_output_suffix_var, self.use_local_models_only_var,
-                self.target_height, self.target_width,
                 self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
                 self.robust_norm_high_percentile, self.robust_norm_output_min,
                 self.robust_norm_output_max, self.robust_output_suffix,
-                self.is_depth_far_black, self.disable_xformers_var
+                self.is_depth_far_black, self.disable_xformers_var,
+                self.enable_tiling, self.tile_size, self.tile_overlap
             ],
             outputs=[self.status_message_var, self.progress]
         )
@@ -456,6 +508,7 @@ class DepthCrafterWebUI(BaseWebUI):
 
         return [
             self.input_dir_or_file_var, self.output_dir,
+            self.resolution_preset, self.target_width, self.target_height,
             self.guidance_scale, self.inference_steps, self.seed,
             self.cpu_offload, self.use_cudnn_benchmark,
             self.process_length, self.target_fps,
@@ -468,11 +521,11 @@ class DepthCrafterWebUI(BaseWebUI):
             self.merge_norm_high_perc_var, self.keep_intermediate_npz_var,
             self.min_frames_to_keep_npz_var, self.keep_intermediate_segment_visual_format_var,
             self.merge_output_suffix_var, self.use_local_models_only_var,
-            self.target_height, self.target_width,
             self.enable_dual_output_robust_norm, self.robust_norm_low_percentile,
             self.robust_norm_high_percentile, self.robust_norm_output_min,
-            self.robust_norm_output_max,             self.robust_output_suffix,
+            self.robust_norm_output_max, self.robust_output_suffix,
             self.is_depth_far_black, self.disable_xformers_var,
+            self.enable_tiling, self.tile_size, self.tile_overlap,
             self.progress, self.status_message_var
         ]
 
@@ -486,7 +539,8 @@ class DepthCrafterWebUI(BaseWebUI):
         logger.debug("stop_event cleared for new processing job")
 
         # Extract parameters from args
-        (input_path, output_path, guidance_scale, inference_steps, seed,
+        (input_path, output_path, resolution_preset, target_width, target_height,
+         guidance_scale, inference_steps, seed,
          cpu_offload, use_cudnn_benchmark, process_length, target_fps,
          window_size, overlap, decode_chunk_size, process_as_segments, save_final_json,
          merge_output_format, merge_alignment_method, merge_dither,
@@ -494,11 +548,12 @@ class DepthCrafterWebUI(BaseWebUI):
          merge_percentile_norm, merge_norm_low_perc, merge_norm_high_perc,
          keep_intermediate_npz, min_frames_to_keep_npz,
          keep_intermediate_segment_visual_format, merge_output_suffix,
-         use_local_models_only, target_height, target_width,
+         use_local_models_only,
          enable_dual_output_robust_norm, robust_norm_low_percentile,
          robust_norm_high_percentile, robust_norm_output_min,
          robust_norm_output_max, robust_output_suffix,
-         is_depth_far_black, disable_xformers) = args
+         is_depth_far_black, disable_xformers,
+         enable_tiling, tile_size, tile_overlap) = args
 
         try:
             # Parameter validation and type conversion
@@ -525,6 +580,29 @@ class DepthCrafterWebUI(BaseWebUI):
             target_height = int(target_height)
             target_width = int(target_width)
             min_frames_to_keep_npz = int(min_frames_to_keep_npz)
+            tile_size = int(tile_size)
+            tile_overlap = int(tile_overlap)
+
+            # VRAM-based tiling suggestions
+            try:
+                vram_info = get_current_vram_usage()
+                total_vram = vram_info.get('total_gb', 8)
+                free_vram = vram_info.get('free_gb', total_vram)
+                # Suggest tiling if resolution is high and VRAM low
+                if target_width > 1920 or target_height > 1080:
+                    suggested_tile_size = 512 if total_vram < 16 else 1024
+                    suggested_overlap = 128
+                    tiling_suggestion = f"Suggested for {target_width}x{target_height}: Tile {suggested_tile_size}x{suggested_tile_size}, Overlap {suggested_overlap} (VRAM: {total_vram:.1f}GB)"
+                    logger.info(f"Tiling suggestion: {tiling_suggestion}")
+                    if enable_tiling:
+                        logger.info("Tiling enabled - processing will use tiling (if implemented)")
+                    else:
+                        logger.warning("High resolution detected but tiling disabled - risk of OOM if VRAM insufficient")
+                else:
+                    tiling_suggestion = f"No tiling needed for {target_width}x{target_height} (VRAM: {total_vram:.1f}GB)"
+            except Exception as e:
+                logger.warning(f"Could not get VRAM for tiling suggestion: {e}")
+                tiling_suggestion = "VRAM detection failed - check manually"
 
             # Automatically reduce resolution for very high res to prevent OOM
             # Dynamic max_res based on available VRAM
@@ -548,8 +626,8 @@ class DepthCrafterWebUI(BaseWebUI):
             except Exception as e:
                 logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
                 max_res = 1024
-            # Preserve aspect ratio when clamping resolution
-            if target_height > max_res or target_width > max_res:
+            # Preserve aspect ratio when clamping resolution, unless tiling is enabled
+            if not enable_tiling and (target_height > max_res or target_width > max_res):
                 scale = min(1.0, max_res / max(target_height, target_width))
                 new_height = int(target_height * scale)
                 new_width = int(target_width * scale)
@@ -739,7 +817,8 @@ class DepthCrafterWebUI(BaseWebUI):
                             segment_job_info_param=segment_info,
                             keep_intermediate_npz_config=keep_npz_for_this_job_run,  # Use the calculated value
                             intermediate_segment_visual_format_config=keep_intermediate_segment_visual_format,
-                            save_final_json_for_this_job_config=save_final_json
+                            save_final_json_for_this_job_config=save_final_json,
+                            enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap
                         )
                         
                         if returned_job_specific_metadata.get("status") == "success":
@@ -871,7 +950,8 @@ class DepthCrafterWebUI(BaseWebUI):
                         segment_job_info_param=None,
                         keep_intermediate_npz_config=keep_intermediate_npz,
                         intermediate_segment_visual_format_config=keep_intermediate_segment_visual_format,
-                        save_final_json_for_this_job_config=save_final_json
+                        save_final_json_for_this_job_config=save_final_json,
+                        enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap
                     )
                     logger.info("Full video processing completed")
                 
