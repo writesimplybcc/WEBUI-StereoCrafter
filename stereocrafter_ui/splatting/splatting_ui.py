@@ -978,7 +978,10 @@ class SplatterWebUI:
             depth_blur_size_y = 0.0,
         ):
         logger.debug("==> Initializing ForwardWarpStereo module")
-        stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available. Splatting requires a CUDA-enabled GPU.")
+        device = torch.device('cuda')
+        stereo_projector = ForwardWarpStereo(occlu_map=True).to(device)
 
         num_frames = total_frames_to_process
         height, width = target_output_height, target_output_width
@@ -1158,8 +1161,8 @@ class SplatterWebUI:
                 # --- TIMER 3: HtoD Transfer (CPU to GPU) ---
                 t_start_transfer_HtoD = time.perf_counter()
 
-                left_video_tensor = torch.from_numpy(batch_frames_numpy).permute(0, 3, 1, 2).float().cuda() / 255.0
-                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).float().cuda()
+                left_video_tensor = torch.from_numpy(batch_frames_numpy).permute(0, 3, 1, 2).float().to(device) / 255.0
+                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).float().to(device)
                 disp_map_tensor = (disp_map_tensor - zero_disparity_anchor_val) * 2.0
                 disp_map_tensor = disp_map_tensor * max_disp
 
