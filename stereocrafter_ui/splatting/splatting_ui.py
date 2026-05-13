@@ -1224,11 +1224,12 @@ class SplatterWebUI:
                         break
 
                     video_grid_clipped = np.clip(video_grid, 0.0, 1.0)
-                    # Convert to 16-bit RGB for FFmpeg
+                    # Convert to 16-bit BGR for FFmpeg
                     video_grid_uint16 = (video_grid_clipped * 65535.0).astype(np.uint16)
+                    video_grid_bgr = cv2.cvtColor(video_grid_uint16, cv2.COLOR_RGB2BGR)
 
                     # --- SEND FRAME TO FFMPEG PIPE ---
-                    ffmpeg_process.stdin.write(video_grid_uint16.tobytes())
+                    ffmpeg_process.stdin.write(video_grid_bgr.tobytes())
                     ffmpeg_process.stdin.flush()
 
                     frame_count += 1
