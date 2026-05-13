@@ -293,6 +293,14 @@ class RenderProcessor:
                 batch_video_numpy = input_video_reader.get_batch(batch_indices).asnumpy()
                 batch_depth_numpy_raw = depth_map_reader.get_batch(batch_indices).asnumpy()
 
+                # Adjust batch size if depth reader returned fewer frames (e.g., due to EOF)
+                actual_batch_size = min(batch_video_numpy.shape[0], batch_depth_numpy_raw.shape[0])
+                if actual_batch_size < len(batch_indices):
+                    logger.warning(f"Batch size adjusted from {len(batch_indices)} to {actual_batch_size} due to insufficient depth frames.")
+                    batch_indices = batch_indices[:actual_batch_size]
+                    batch_video_numpy = batch_video_numpy[:actual_batch_size]
+                    batch_depth_numpy_raw = batch_depth_numpy_raw[:actual_batch_size]
+
                 if flip_horizontal:
                     batch_video_numpy = np.flip(batch_video_numpy, axis=2).copy()
                     batch_depth_numpy_raw = np.flip(batch_depth_numpy_raw, axis=2).copy()

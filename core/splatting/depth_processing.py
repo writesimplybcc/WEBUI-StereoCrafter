@@ -580,7 +580,7 @@ class FFmpegDepthPipeReader:
             "-sn",
             "-dn",
             "-vframes",
-            str(self._num_frames) if isinstance(self._num_frames, int) and self._num_frames > 0 else "999999999",
+            "999999999",
             "-vf",
             vf,
             "-f",
@@ -746,12 +746,13 @@ class FFmpegDepthPipeReader:
         n = len(indices)
         expected = self._frame_bytes * n
         buf = self._read_exact(expected)
-        if len(buf) != expected:
-            raise EOFError(f"FFmpegDepthPipeReader: expected {expected} bytes, got {len(buf)}")
+        actual_n = len(buf) // self._frame_bytes
+        if actual_n == 0:
+            raise EOFError(f"FFmpegDepthPipeReader: no data available for indices {indices}")
 
-        arr = np.frombuffer(buf, dtype=np.uint16).reshape(n, self.out_h, self.out_w, 1)
+        arr = np.frombuffer(buf, dtype=np.uint16).reshape(actual_n, self.out_h, self.out_w, 1)
         arr = self._maybe_apply_shift(arr)
-        self._next_index = first + n
+        self._next_index = first + actual_n
         return _NumpyBatch(arr.copy())
 
 

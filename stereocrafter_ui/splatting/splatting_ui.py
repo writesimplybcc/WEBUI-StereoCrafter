@@ -1205,10 +1205,15 @@ class SplatterWebUI:
 
                 for j in range(len(batch_frames_numpy)):
                     if dual_output:
-                        video_grid = np.concatenate([occlusion_mask_numpy[j], right_video_numpy[j]], axis=1)
+                        # Convert RGB to BGR for FFmpeg
+                        right_video_bgr = right_video_numpy[j][:, :, ::-1]
+                        video_grid = np.concatenate([occlusion_mask_numpy[j], right_video_bgr], axis=1)
                     else:
-                        video_grid_top = np.concatenate([batch_frames_float[j], batch_depth_vis[j]], axis=1)
-                        video_grid_bottom = np.concatenate([occlusion_mask_numpy[j], right_video_numpy[j]], axis=1)
+                        # Convert RGB to BGR for FFmpeg
+                        batch_frame_bgr = batch_frames_float[j][:, :, ::-1]
+                        right_video_bgr = right_video_numpy[j][:, :, ::-1]
+                        video_grid_top = np.concatenate([batch_frame_bgr, batch_depth_vis[j]], axis=1)
+                        video_grid_bottom = np.concatenate([occlusion_mask_numpy[j], right_video_bgr], axis=1)
                         video_grid = np.concatenate([video_grid_top, video_grid_bottom], axis=0)
 
                     # Debug: check for bad values before validation
@@ -1248,6 +1253,8 @@ class SplatterWebUI:
             logger.error(f"Error during splatting: {e}", exc_info=True)
             encoding_successful = False
 
+        logger.info(f"Sent {frame_count} frames to FFmpeg for {os.path.basename(final_output_video_path)}")
+
         # Cleanup
         del stereo_projector
         torch.cuda.empty_cache()
@@ -1285,6 +1292,15 @@ class SplatterWebUI:
             logger.info(f"Successfully encoded video to {final_output_video_path}")
 
         if not encoding_successful:
+            # Terminate FFmpeg if still running to allow file deletion
+            if ffmpeg_process and ffmpeg_process.poll() is None:
+                ffmpeg_process.terminate()
+                try:
+                    ffmpeg_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    ffmpeg_process.kill()
+                    ffmpeg_process.wait(timeout=5)
+
             # Delete temporary file on failure to prevent corrupted files
             if os.path.exists(temp_output_path):
                 try:
@@ -2521,7 +2537,7 @@ class SplatterWebUI:
             completed_splatting_task = self.depthSplatting(
                 input_video_reader=video_reader_input,
                 depth_map_reader=depth_reader_input,
-                total_frames_to_process=total_frames_input,
+                total_frames_to_process=min(total_frames_input, total_frames_depth),
                 processed_fps=processed_fps,
                 output_video_path_base=output_video_path_base,
                 target_output_height=current_processed_height,
@@ -2575,7 +2591,7 @@ class SplatterWebUI:
         self.processing_filename = video_filename
         self.processing_task_name = "Processing"
         self.processing_resolution = f"{current_processed_width}x{current_processed_height}"
-        self.processing_frames = f"{total_frames_input}"
+        self.processing_frames = f"{min(total_frames_input, total_frames_depth)}"
         self.processing_gamma = f"{current_depth_gamma:.2f}"
         self.processing_disparity = f"{current_max_disparity_percentage:.1f}%"
         self.processing_convergence = f"{current_zero_disparity_anchor:.2f}"
@@ -3828,7 +3844,7 @@ class SplatterWebUI:
             process_to = str(process_to).strip() if process_to else ""
         except (ValueError, TypeError) as e:
             return f"Error: Invalid input type - {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=False)
-        
+
         # Update all the parameters from the UI inputs
         self.input_source_clips = input_source_clips
         self.input_depth_maps = input_depth_maps
@@ -3836,7 +3852,28 @@ class SplatterWebUI:
         self.max_disp = max_disp
         self.process_length = process_length
         self.enable_full_res = enable_full_res
-        self.batch_size = batch_size
+
+        # Adjust batch_size based on VRAM and resolution for full-res processing
+        adjusted_batch_size = batch_size
+        if enable_full_res and torch.cuda.is_available():
+            try:
+                total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                # Estimate VRAM needed: roughly 200MB per 1080p frame, scales with resolution
+                # For 4K (4x 1080p area), ~800MB per frame
+                estimated_vram_per_frame_mb = (pre_res_width * pre_res_height / (1920 * 1080)) * 200
+                safe_batch_size = max(1, int((total_vram_gb * 1024 * 0.7) / estimated_vram_per_frame_mb))  # 70% of VRAM
+                if batch_size > safe_batch_size:
+                    logger.warning(f"Reducing batch_size from {batch_size} to {safe_batch_size} for {pre_res_width}x{pre_res_height} on {total_vram_gb:.1f}GB GPU")
+                    adjusted_batch_size = safe_batch_size
+            except Exception as e:
+                logger.debug(f"Could not adjust batch_size based on VRAM: {e}")
+
+        # Force batch_size to 1 for ultra-high resolutions to prevent OOM
+        if enable_full_res and pre_res_width * pre_res_height > 3840 * 2160:  # Beyond 4K
+            adjusted_batch_size = 1
+            logger.warning(f"Forcing batch_size to 1 for ultra-high resolution {pre_res_width}x{pre_res_height} to prevent CUDA OOM")
+
+        self.batch_size = adjusted_batch_size
         self.enable_low_res = enable_low_res
         self.pre_res_width = pre_res_width
         self.pre_res_height = pre_res_height
@@ -4879,7 +4916,21 @@ def read_video_frames(
         logger.debug(f"==> Initializing VideoReader for: {video_path}")
         vid_info_only = VideoReader(video_path, ctx=cpu(0)) # Use separate reader for info
         original_height, original_width = vid_info_only.get_batch([0]).shape[1:3]
-        total_frames_original = len(vid_info_only)
+        # Use moviepy for accurate frame count
+        try:
+            clip = VideoFileClip(video_path)
+            fps_clip = clip.fps
+            duration = clip.duration
+            if fps_clip is not None and duration is not None:
+                total_frames_original = math.ceil(duration * fps_clip)
+            else:
+                total_frames_original = len(vid_info_only)
+            clip.close()
+        except Exception as e:
+            logger.warning(f"MoviePy frame count failed for {os.path.basename(video_path)}: {e}. Using VideoReader len.")
+            total_frames_original = len(vid_info_only)
+        # Ensure it doesn't exceed VideoReader's actual frame count
+        total_frames_original = min(total_frames_original, len(vid_info_only))
         logger.debug(f"==> Original video shape: {total_frames_original} frames, {original_height}x{original_width} per frame")
 
         height_for_reader = original_height
@@ -4904,14 +4955,41 @@ def read_video_frames(
     
     fps = video_reader.get_avg_fps() # Use actual FPS from the reader
 
-    total_frames_available = len(video_reader)
+    total_frames_available = min(total_frames_original, len(video_reader))  # Cap at VideoReader's actual count
+
+    video_stream_info = get_video_stream_info(video_path) # Get stream info for FFmpeg later
+
+    # Use ffprobe frame count if available for highest accuracy
+    nb_frames = video_stream_info.get('nb_frames')
+    if nb_frames is not None:
+        try:
+            ffprobe_frames = int(nb_frames)
+            total_frames_available = min(ffprobe_frames, len(video_reader))
+            logger.debug(f"Using ffprobe frame count: {ffprobe_frames}, capped at VideoReader len: {len(video_reader)}")
+        except (ValueError, TypeError):
+            pass
+
     total_frames_to_process = total_frames_available # Use available frames directly
     if process_length != -1 and process_length < total_frames_available:
         total_frames_to_process = process_length
-    
-    logger.debug(f"==> VideoReader initialized. Final processing dimensions: {actual_processed_width}x{actual_processed_height}. Total frames for processing: {total_frames_to_process}")
 
+    logger.debug(f"==> VideoReader initialized. Final processing dimensions: {actual_processed_width}x{actual_processed_height}. Total frames for processing: {total_frames_to_process}")
+    if process_length != -1 and process_length < total_frames_available:
+        total_frames_to_process = process_length
+    
     video_stream_info = get_video_stream_info(video_path) # Get stream info for FFmpeg later
+
+    # Use ffprobe frame count if available for highest accuracy
+    nb_frames = video_stream_info.get('nb_frames')
+    if nb_frames is not None:
+        try:
+            ffprobe_frames = int(nb_frames)
+            total_frames_available = min(ffprobe_frames, len(video_reader))
+            logger.debug(f"Using ffprobe frame count: {ffprobe_frames}, capped at VideoReader len: {len(video_reader)}")
+        except (ValueError, TypeError):
+            pass
+
+    total_frames_to_process = total_frames_available # Use available frames directly
 
     return video_reader, fps, original_height, original_width, actual_processed_height, actual_processed_width, video_stream_info, total_frames_to_process
 
@@ -4930,21 +5008,42 @@ def load_pre_rendered_depth(
     logger.debug(f"==> Initializing VideoReader for depth maps from: {depth_map_path}")
 
     # NEW: Get stream info for the depth map video
-    depth_stream_info = get_video_stream_info(depth_map_path) 
+    depth_stream_info = get_video_stream_info(depth_map_path)
 
     if depth_map_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
         depth_reader = VideoReader(depth_map_path, ctx=cpu(0), width=target_width, height=target_height)
-        
+
         first_depth_frame_shape = depth_reader.get_batch([0]).shape
         actual_depth_height, actual_depth_width = first_depth_frame_shape[1:3]
-        
+
         total_depth_frames_available = len(depth_reader)
+
+        # Use moviepy for accurate frame count
+        try:
+            clip = VideoFileClip(depth_map_path)
+            fps_clip = clip.fps
+            duration = clip.duration
+            if fps_clip is not None and duration is not None:
+                total_depth_frames_available = min(math.ceil(duration * fps_clip), len(depth_reader))
+            clip.close()
+        except Exception as e:
+            logger.warning(f"MoviePy frame count failed for depth {os.path.basename(depth_map_path)}: {e}. Using VideoReader len.")
+        # Use ffprobe if available
+        nb_frames = depth_stream_info.get('nb_frames')
+        if nb_frames is not None:
+            try:
+                ffprobe_frames = int(nb_frames)
+                total_depth_frames_available = min(ffprobe_frames, len(depth_reader))
+                logger.debug(f"Using ffprobe frame count for depth: {ffprobe_frames}, capped at VideoReader len: {len(depth_reader)}")
+            except (ValueError, TypeError):
+                pass
+
         total_depth_frames_to_process = total_depth_frames_available
         if process_length != -1 and process_length < total_depth_frames_available:
             total_depth_frames_to_process = process_length
 
         logger.debug(f"==> DepthReader initialized. Final depth dimensions: {actual_depth_width}x{actual_depth_height}. Total frames for processing: {total_depth_frames_to_process}")
-        
+
         return depth_reader, total_depth_frames_to_process, actual_depth_height, actual_depth_width, depth_stream_info
     
     elif depth_map_path.lower().endswith('.npz'):

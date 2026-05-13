@@ -721,8 +721,12 @@ class BatchProcessor:
                 total_val = 0
                 d_total_val = 0
 
-            if total_val != d_total_val and total_val > 0 and d_total_val > 0:
-                self.logger.error(f"Frame count mismatch: source={total_val}, depth={d_total_val}")
+            if total_val > 0 and d_total_val > 0:
+                actual_frames = min(total_val, d_total_val)
+                if total_val != d_total_val:
+                    self.logger.warning(f"Frame count mismatch detected: source has {total_val} frames, depth has {d_total_val} frames. Processing {actual_frames} frames.")
+            else:
+                self.logger.error("Unable to determine valid frame counts for source and depth videos.")
                 return None
 
             return {
@@ -733,7 +737,7 @@ class BatchProcessor:
                 "target_w": target_w,
                 "source_info": info,
                 "depth_info": d_info,
-                "total_frames": total,
+                "total_frames": actual_frames,
                 "orig_h": orig_h,
                 "orig_w": orig_w,
             }
