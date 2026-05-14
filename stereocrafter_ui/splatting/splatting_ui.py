@@ -19,6 +19,7 @@ import logging
 from typing import Optional, Tuple, Optional, Dict, Any, List
 from PIL import Image
 import math
+import re
 
 # Import custom modules
 CUDA_AVAILABLE = False # start state, will check automaticly later
@@ -90,6 +91,8 @@ try:
         DEPTH_VIS_TV10_BLACK_NORM,
         DEPTH_VIS_TV10_WHITE_NORM,
         _infer_depth_bit_depth,
+        compute_global_depth_stats,
+        load_pre_rendered_depth,
     )
     from core.splatting.config_manager import ConfigManager
     CORE_MODULES_AVAILABLE = True
@@ -1712,9 +1715,50 @@ class SplatterWebUI:
         return config
 
     def _get_current_sidecar_paths_and_data(self):
-        """Helper to get current file path, sidecar path, and existing data (merged with defaults)."""
-        # For now, we'll return a placeholder
-        return None
+        """Helper to get a reasonable sidecar path and its current data.
+
+        Behavior (WebUI):
+          - If a depth map matching the first source video exists in the input_depth_maps
+            folder (or selected subfolder in multi-map mode), use that.
+          - Otherwise pick the first *_depth.mp4 in the (effective) depth folder.
+          - Returns (json_sidecar_path, depth_map_path, current_data_dict)
+        """
+        try:
+            # Determine effective depth folder
+            effective_folder = self._get_effective_depth_map_folder()
+            if not effective_folder or not os.path.isdir(effective_folder):
+                # Fall back to raw input_depth_maps value
+                effective_folder = self.input_depth_maps
+
+            # Find candidate depth files (prefer *_depth.mp4)
+            candidates = glob.glob(os.path.join(effective_folder, "*_depth.mp4"))
+            if not candidates:
+                # Try any mp4 in folder
+                candidates = glob.glob(os.path.join(effective_folder, "*.mp4"))
+            if not candidates:
+                return None
+
+            depth_map_path = sorted(candidates)[0]
+
+            # Derive sidecar path (sidecars stored in sidecar folder when multi-map enabled)
+            sidecar_ext = self.APP_CONFIG_DEFAULTS.get("SIDECAR_EXT", ".fssidecar")
+            sidecar_folder = self._get_sidecar_base_folder()
+            depth_basename = os.path.splitext(os.path.basename(depth_map_path))[0]
+            json_sidecar_path = os.path.join(sidecar_folder, f"{depth_basename}{sidecar_ext}")
+
+            # Load existing data if available
+            current_data = {}
+            if os.path.exists(json_sidecar_path):
+                try:
+                    current_data = self.sidecar_manager.load_sidecar_data(json_sidecar_path) or {}
+                except Exception as e:
+                    logger.warning(f"Failed to load sidecar '{json_sidecar_path}': {e}")
+                    current_data = {}
+
+            return json_sidecar_path, depth_map_path, current_data
+        except Exception as e:
+            logger.error(f"_get_current_sidecar_paths_and_data error: {e}")
+            return None
 
     def _get_defined_tasks(self, settings):
         """Helper to return a list of processing tasks based on GUI settings."""
@@ -1998,7 +2042,7 @@ class SplatterWebUI:
             except Exception as e:
                 logger.error(f"==> Error initializing depth map reader for {os.path.basename(video_path)} {task_settings['name']} pass: {e}. Skipping this pass.")
                 if video_reader_input: del video_reader_input
-                return None, None, 0.0, 0, 0, None, 0, 0, 0, None # Return None for depth_stream_info
+                return None, None, 0.0, 0, 0, None, 0, 0, 0, 0, None # Return None for depth_stream_info
     
             # CRITICAL CHECK: Ensure input video and depth map have consistent frame counts
             if total_frames_input != total_frames_depth:
@@ -4912,145 +4956,100 @@ def read_video_frames(
     Initializes a VideoReader for chunked reading.
     Returns: (video_reader, fps, original_height, original_width, actual_processed_height, actual_processed_width, video_stream_info, total_frames_to_process)
     """
-    if dataset == "open":
-        logger.debug(f"==> Initializing VideoReader for: {video_path}")
-        vid_info_only = VideoReader(video_path, ctx=cpu(0)) # Use separate reader for info
-        original_height, original_width = vid_info_only.get_batch([0]).shape[1:3]
-        # Use moviepy for accurate frame count
-        try:
-            clip = VideoFileClip(video_path)
-            fps_clip = clip.fps
-            duration = clip.duration
-            if fps_clip is not None and duration is not None:
-                total_frames_original = math.ceil(duration * fps_clip)
-            else:
-                total_frames_original = len(vid_info_only)
-            clip.close()
-        except Exception as e:
-            logger.warning(f"MoviePy frame count failed for {os.path.basename(video_path)}: {e}. Using VideoReader len.")
-            total_frames_original = len(vid_info_only)
-        # Ensure it doesn't exceed VideoReader's actual frame count
-        total_frames_original = min(total_frames_original, len(vid_info_only))
-        logger.debug(f"==> Original video shape: {total_frames_original} frames, {original_height}x{original_width} per frame")
-
-        height_for_reader = original_height
-        width_for_reader = original_width
-
-        if set_pre_res and pre_res_width > 0 and pre_res_height > 0:
-            height_for_reader = pre_res_height
-            width_for_reader = pre_res_width
-            logger.debug(f"==> Pre-processing resolution set to: {width_for_reader}x{height_for_reader}")
-        else:
-            logger.debug(f"==> Using original video resolution for reading: {width_for_reader}x{height_for_reader}")
-
-    else:
+    if dataset != "open":
         raise NotImplementedError(f"Dataset '{dataset}' not supported.")
+
+    logger.debug(f"==> Initializing VideoReader for: {video_path}")
+    # Quick info-only reader
+    vid_info_only = VideoReader(video_path, ctx=cpu(0))
+    original_height, original_width = vid_info_only.get_batch([0]).shape[1:3]
+    total_frames_reader = len(vid_info_only)
+
+    # Use moviepy for accurate frame count if available
+    total_frames_original = total_frames_reader
+    try:
+        clip = VideoFileClip(video_path)
+        fps_clip = clip.fps
+        duration = clip.duration
+        if fps_clip is not None and duration is not None:
+            total_frames_original = math.ceil(duration * fps_clip)
+        clip.close()
+    except Exception as e:
+        logger.debug(f"MoviePy frame count unavailable or failed for {os.path.basename(video_path)}: {e}. Using VideoReader len.")
+
+    # Ensure not to exceed the reader's available frames
+    total_frames_original = min(total_frames_original, total_frames_reader)
+
+    # Determine reader resolution
+    height_for_reader = original_height
+    width_for_reader = original_width
+    if set_pre_res and pre_res_width > 0 and pre_res_height > 0:
+        height_for_reader = pre_res_height
+        width_for_reader = pre_res_width
+        logger.debug(f"==> Pre-processing resolution set to: {width_for_reader}x{height_for_reader}")
+    else:
+        logger.debug(f"==> Using original video resolution for reading: {width_for_reader}x{height_for_reader}")
 
     # decord automatically resizes if width/height are passed to VideoReader
     video_reader = VideoReader(video_path, ctx=cpu(0), width=width_for_reader, height=height_for_reader)
-    
-    # Verify the actual shape after Decord processing, using the first frame
     first_frame_shape = video_reader.get_batch([0]).shape
     actual_processed_height, actual_processed_width = first_frame_shape[1:3]
-    
-    fps = video_reader.get_avg_fps() # Use actual FPS from the reader
 
-    total_frames_available = min(total_frames_original, len(video_reader))  # Cap at VideoReader's actual count
+    fps = video_reader.get_avg_fps()  # Use actual FPS from the reader
 
-    video_stream_info = get_video_stream_info(video_path) # Get stream info for FFmpeg later
+    # Base available frames on the reader and authoritative sources
+    total_frames_available = min(total_frames_original, len(video_reader))
 
-    # Use ffprobe frame count if available for highest accuracy
-    nb_frames = video_stream_info.get('nb_frames')
+    video_stream_info = get_video_stream_info(video_path)  # Get stream info for FFmpeg later
+    nb_frames = video_stream_info.get('nb_frames') if video_stream_info else None
     if nb_frames is not None:
         try:
             ffprobe_frames = int(nb_frames)
-            total_frames_available = min(ffprobe_frames, len(video_reader))
+            total_frames_available = min(total_frames_available, ffprobe_frames)
             logger.debug(f"Using ffprobe frame count: {ffprobe_frames}, capped at VideoReader len: {len(video_reader)}")
         except (ValueError, TypeError):
             pass
 
-    total_frames_to_process = total_frames_available # Use available frames directly
+    total_frames_to_process = total_frames_available
     if process_length != -1 and process_length < total_frames_available:
         total_frames_to_process = process_length
 
     logger.debug(f"==> VideoReader initialized. Final processing dimensions: {actual_processed_width}x{actual_processed_height}. Total frames for processing: {total_frames_to_process}")
-    if process_length != -1 and process_length < total_frames_available:
-        total_frames_to_process = process_length
-    
-    video_stream_info = get_video_stream_info(video_path) # Get stream info for FFmpeg later
-
-    # Use ffprobe frame count if available for highest accuracy
-    nb_frames = video_stream_info.get('nb_frames')
-    if nb_frames is not None:
-        try:
-            ffprobe_frames = int(nb_frames)
-            total_frames_available = min(ffprobe_frames, len(video_reader))
-            logger.debug(f"Using ffprobe frame count: {ffprobe_frames}, capped at VideoReader len: {len(video_reader)}")
-        except (ValueError, TypeError):
-            pass
-
-    total_frames_to_process = total_frames_available # Use available frames directly
 
     return video_reader, fps, original_height, original_width, actual_processed_height, actual_processed_width, video_stream_info, total_frames_to_process
 
 
-def load_pre_rendered_depth(
-        depth_map_path: str,
-        process_length: int,
-        target_height: int,
-        target_width: int,
-        match_resolution_to_target: bool):
-    """
-    Initializes a VideoReader for chunked depth map reading.
-    No normalization or autogain is applied here.
-    Returns: (depth_reader, total_depth_frames_to_process, actual_depth_height, actual_depth_width)
-    """
-    logger.debug(f"==> Initializing VideoReader for depth maps from: {depth_map_path}")
+# -----------------------------
+# 10-bit+ depth decode helpers
+# -----------------------------
 
-    # NEW: Get stream info for the depth map video
-    depth_stream_info = get_video_stream_info(depth_map_path)
+def _infer_depth_bit_depth(depth_stream_info: Optional[dict]) -> int:
+    """Best-effort bit-depth inference from ffprobe info."""
+    if not depth_stream_info:
+        return 8
+    pix_fmt = str(depth_stream_info.get("pix_fmt", "")).lower()
+    profile = str(depth_stream_info.get("profile", "")).lower()
 
-    if depth_map_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        depth_reader = VideoReader(depth_map_path, ctx=cpu(0), width=target_width, height=target_height)
-
-        first_depth_frame_shape = depth_reader.get_batch([0]).shape
-        actual_depth_height, actual_depth_width = first_depth_frame_shape[1:3]
-
-        total_depth_frames_available = len(depth_reader)
-
-        # Use moviepy for accurate frame count
+    # Common patterns: yuv420p10le, yuv444p12le, gray16le, etc.
+    m = re.search(r"(?:p|gray)(\d+)", pix_fmt)
+    if m:
         try:
-            clip = VideoFileClip(depth_map_path)
-            fps_clip = clip.fps
-            duration = clip.duration
-            if fps_clip is not None and duration is not None:
-                total_depth_frames_available = min(math.ceil(duration * fps_clip), len(depth_reader))
-            clip.close()
-        except Exception as e:
-            logger.warning(f"MoviePy frame count failed for depth {os.path.basename(depth_map_path)}: {e}. Using VideoReader len.")
-        # Use ffprobe if available
-        nb_frames = depth_stream_info.get('nb_frames')
-        if nb_frames is not None:
-            try:
-                ffprobe_frames = int(nb_frames)
-                total_depth_frames_available = min(ffprobe_frames, len(depth_reader))
-                logger.debug(f"Using ffprobe frame count for depth: {ffprobe_frames}, capped at VideoReader len: {len(depth_reader)}")
-            except (ValueError, TypeError):
-                pass
+            return int(m.group(1))
+        except Exception:
+            pass
+    # Fallback heuristics
+    if "10" in pix_fmt or "12" in pix_fmt or "16" in pix_fmt:
+        return 10
+    if "float" in pix_fmt:
+        return 32
+    return 8
 
-        total_depth_frames_to_process = total_depth_frames_available
-        if process_length != -1 and process_length < total_depth_frames_available:
-            total_depth_frames_to_process = process_length
 
-        logger.debug(f"==> DepthReader initialized. Final depth dimensions: {actual_depth_width}x{actual_depth_height}. Total frames for processing: {total_depth_frames_to_process}")
 
-        return depth_reader, total_depth_frames_to_process, actual_depth_height, actual_depth_width, depth_stream_info
-    
-    elif depth_map_path.lower().endswith('.npz'):
-        logger.error("NPZ support is temporarily disabled with disk chunking refactor. Please convert NPZ to MP4 depth video.")
-        raise NotImplementedError("NPZ depth map loading is not yet supported with disk chunking.")
-    else:
-        raise ValueError(f"Unsupported depth map format: {os.path.basename(depth_map_path)}. Only MP4 are supported with disk chunking.")
+# -----------------------------
+# End of read_video_frames replacement
+# -----------------------------
+
 
 
 if __name__ == "__main__":
