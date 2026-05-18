@@ -43,7 +43,7 @@ services:
     # Environment variables
     environment:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - HF_TOKEN=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
+      - HF_TOKEN=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
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_SERVER_PORT=7860
     

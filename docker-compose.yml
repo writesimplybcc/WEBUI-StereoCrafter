@@ -1,6 +1,7 @@
 
 
 services:
+
   WEBUI-stereocrafter:
     image: writesimplybcc/stereocrafter-webui:dev
 
@@ -17,6 +18,13 @@ services:
               capabilities: [gpu]
     ports:
       - "7860:7860"
+    
+    # Environment variables
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+
     volumes:
       # Mount your code for live updates (development mode)
       - ./webui.py:/workspace/WEBUI-StereoCrafter/webui.py
@@ -40,13 +48,6 @@ services:
       - ./final_videos:/workspace/WEBUI-StereoCrafter/final_videos
 
     command: ["bash", "-c", "export PYTHONPATH=/workspace/WEBUI-StereoCrafter && bash runpod-docker-startup.sh"]
-    
-    # Environment variables
-    environment:
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
     
     # Restart policy
     restart: unless-stopped

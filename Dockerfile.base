@@ -23,7 +23,7 @@ WORKDIR /workspace/WEBUI-StereoCrafter
 # Install Python dependencies (this is the slow part)
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt && \
-    pip install --no-cache-dir huggingface_hub[cli]
+    pip install --no-cache-dir --upgrade huggingface_hub[cli]
 
 # Configure git credential helper
 RUN git config --global credential.helper store
