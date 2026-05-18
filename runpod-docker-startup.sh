@@ -1,232 +1,150 @@
 #!/bin/bash
-# StereoCrafter WEBUI - Improved Startup Script
-# Combines reliable download logic with flexible error handling
+# Runpod Startup Script - Downloads weights fresh every time, then starts WEBUI
+# NO persistent storage - weights are downloaded from source on each container start
+
+set -e  # Exit on error
 
 echo "=========================================="
-echo "StereoCrafter WEBUI - Quick Start"
+echo "StereoCrafter WEBUI - Runpod Startup"
 echo "=========================================="
+echo "Started: $(date)"
 echo "Working directory: $(pwd)"
-echo "Date: $(date)"
 echo ""
 
-# Log everything to a file for debugging
+# Log to file for debugging
 exec 1> >(tee -a /tmp/stereocrafter-startup.log)
 exec 2>&1
 
-# ============================================================
-# INSTALL NVENC-ENABLED FFMPEG (if not already present)
-# ============================================================
-FFMPEG_HAS_NVENC=false
-if command -v ffmpeg &> /dev/null; then
-    if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_nvenc"; then
-        FFMPEG_HAS_NVENC=true
-        echo "✅ FFmpeg has NVENC support"
-    else
-        echo "⚠️  System FFmpeg lacks NVENC support"
-    fi
-fi
-
-if [ "$FFMPEG_HAS_NVENC" = false ]; then
-    echo "Installing NVENC-enabled FFmpeg..."
-    # Install FFmpeg with NVENC support from conda-forge
-    conda install -y -c conda-forge ffmpeg || {
-        echo "⚠️  Conda FFmpeg install failed, trying apt..."
-        # Fallback: try to install from NVIDIA repo or Ubuntu repos
-        apt-get update -qq && apt-get install -y -qq ffmpeg 2>/dev/null || {
-            echo "⚠️  FFmpeg installation failed - will use CPU encoding"
-        }
-    }
-
-    # Verify again
-    if command -v ffmpeg &> /dev/null; then
-        if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "h264_nvenc"; then
-            FFMPEG_HAS_NVENC=true
-            echo "✅ FFmpeg now has NVENC support"
-        else
-            echo "⚠️  FFmpeg still lacks NVENC support - will use CPU encoding"
-        fi
-    fi
-fi
-echo ""
-
-echo "Environment check:"
+# Environment info
+echo "Environment:"
 echo "  Python: $(python --version 2>&1)"
+echo "  PyTorch: $(python -c 'import torch; print(torch.__version__)' 2>&1)"
+echo "  CUDA: $(python -c 'import torch; print(torch.version.cuda)' 2>&1)"
 echo "  GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>&1 || echo 'No GPU detected')"
+echo "  RUNPOD_POD_ID: ${RUNPOD_POD_ID:-not set}"
 echo ""
 
-# Check for HF_TOKEN (warn but don't exit - allow running with cached models)
-HF_LOGIN_SUCCESS=false
+# Check for HF_TOKEN (required for downloading)
 if [ -z "$HF_TOKEN" ]; then
-    echo "⚠️  WARNING: HF_TOKEN not set!"
-    echo "   Models may fail to download if they require authentication"
-    echo "   Set HF_TOKEN in RunPod environment variables if needed"
+    echo "❌ ERROR: HF_TOKEN not set!"
+    echo "   HuggingFace token is required to download model weights."
+    echo "   Please set HF_TOKEN in Runpod environment variables."
     echo ""
-    echo "   Continuing anyway - will try to use cached models..."
-    echo ""
-else
-    echo "✅ HF_TOKEN is set"
-    echo ""
-    
-    # Configure git credentials (keemzin/StereoCrafter approach)
-    echo "Configuring HuggingFace authentication..."
-    git config --global credential.helper store
-    
-    # Login via Python huggingface_hub
-    python -c "import os; from huggingface_hub import login; login(token=os.environ['HF_TOKEN'].strip(), add_to_git_credential=True)" 2>&1
-    
-    if [ $? -eq 0 ]; then
-        echo "✅ HuggingFace login successful"
-        HF_LOGIN_SUCCESS=true
-    else
-        echo "⚠️  HuggingFace login failed"
-        echo "   Model downloads may fail if they require authentication"
-    fi
-    echo ""
+    exit 1
 fi
 
-# Navigate to weights folder
-cd weights 2>/dev/null || mkdir -p weights && cd weights
+echo "✅ HF_TOKEN is set"
+echo ""
 
-echo "=========================================="
-echo "Model Weight Verification"
-echo "=========================================="
+# Create weights directory (fresh each time)
+echo "Preparing weights directory..."
+rm -rf weights
+mkdir -p weights
+cd weights
 
-# Check which models are missing (keemzin/StereoCrafter approach - check individually)
-SVD_MISSING=false
-DEPTH_MISSING=false
-STEREO_MISSING=false
+# Login to HuggingFace
+echo "Logging into HuggingFace..."
+git config --global credential.helper store
+python -c "import os; from huggingface_hub import login; login(token=os.environ['HF_TOKEN'].strip(), add_to_git_credential=True)" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ HuggingFace login successful"
+else
+    echo "❌ HuggingFace login failed"
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "Downloading Model Weights"
+echo "=========================================="
+echo "This will take 10-15 minutes on first run..."
+echo ""
+
+# Download Stable Video Diffusion (~24GB)
+echo "[1/3] Downloading Stable Video Diffusion (~24GB)..."
+python -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/stable-video-diffusion-img2vid-xt-1-1', local_dir='stable-video-diffusion-img2vid-xt-1-1', local_dir_use_symlinks=False)" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ Stable Video Diffusion downloaded"
+else
+    echo "❌ Failed to download Stable Video Diffusion"
+    exit 1
+fi
+
+echo ""
+
+# Download DepthCrafter (~15GB)
+echo "[2/3] Downloading DepthCrafter (~15GB)..."
+python -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/DepthCrafter', local_dir='DepthCrafter', local_dir_use_symlinks=False)" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ DepthCrafter downloaded"
+else
+    echo "❌ Failed to download DepthCrafter"
+    exit 1
+fi
+
+echo ""
+
+# Download StereoCrafter (~9GB)
+echo "[3/3] Downloading StereoCrafter (~9GB)..."
+python -c "from huggingface_hub import snapshot_download; snapshot_download('TencentARC/StereoCrafter', local_dir='StereoCrafter', local_dir_use_symlinks=False)" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ StereoCrafter downloaded"
+else
+    echo "❌ Failed to download StereoCrafter"
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "Download Complete!"
+echo "=========================================="
+echo "Total weights size: $(du -sh . 2>/dev/null | cut -f1 || echo 'unknown')"
+echo ""
+
+# Verify all weights exist
+echo "Verifying downloaded weights..."
+WEIGHTS_OK=true
 
 if [ ! -d "stable-video-diffusion-img2vid-xt-1-1" ]; then
-    echo "⚠️  stable-video-diffusion-img2vid-xt-1-1 not found"
-    SVD_MISSING=true
-else
-    echo "✅ stable-video-diffusion-img2vid-xt-1-1 found ($(du -sh stable-video-diffusion-img2vid-xt-1-1 2>/dev/null | cut -f1))"
+    echo "❌ stable-video-diffusion-img2vid-xt-1-1 missing"
+    WEIGHTS_OK=false
 fi
 
 if [ ! -d "DepthCrafter" ]; then
-    echo "⚠️  DepthCrafter not found"
-    DEPTH_MISSING=true
-else
-    echo "✅ DepthCrafter found ($(du -sh DepthCrafter 2>/dev/null | cut -f1))"
+    echo "❌ DepthCrafter missing"
+    WEIGHTS_OK=false
 fi
 
 if [ ! -d "StereoCrafter" ]; then
-    echo "⚠️  StereoCrafter not found"
-    STEREO_MISSING=true
-else
-    echo "✅ StereoCrafter found ($(du -sh StereoCrafter 2>/dev/null | cut -f1))"
+    echo "❌ StereoCrafter missing"
+    WEIGHTS_OK=false
 fi
 
-echo ""
-
-# Download missing models (keemzin/StereoCrafter approach - always download what's missing)
-if [ "$SVD_MISSING" = false ] && [ "$DEPTH_MISSING" = false ] && [ "$STEREO_MISSING" = false ]; then
-    echo "✅ All model weights already downloaded"
-    echo "   Total size: $(du -sh . 2>/dev/null | cut -f1)"
-else
-    echo "=========================================="
-    echo "Downloading Missing Models"
-    echo "=========================================="
+if [ "$WEIGHTS_OK" = false ]; then
     echo ""
-    
-    # Function to download a model (tries CLI first, falls back to Python)
-    download_model() {
-        local repo=$1
-        local folder=$2
-        
-        echo "Downloading $repo → $folder..."
-        
-        # Try huggingface-cli first (faster, more reliable - keemzin/StereoCrafter approach)
-        if command -v huggingface-cli &> /dev/null; then
-            echo "  Using huggingface-cli (fast method)..."
-            huggingface-cli download "$repo" --local-dir "$folder" 2>&1
-            
-            if [ $? -eq 0 ]; then
-                echo "  ✅ Download complete: $folder ($(du -sh $folder 2>/dev/null | cut -f1))"
-                return 0
-            else
-                echo "  ⚠️  huggingface-cli failed, trying Python fallback..."
-            fi
-        else
-            echo "  huggingface-cli not found, using Python..."
-        fi
-        
-        # Fallback to Python snapshot_download
-        python -c "from huggingface_hub import snapshot_download; snapshot_download('$repo', local_dir='$folder', local_dir_use_symlinks=False)" 2>&1
-        
-        if [ $? -eq 0 ]; then
-            echo "  ✅ Download complete: $folder ($(du -sh $folder 2>/dev/null | cut -f1))"
-            return 0
-        else
-            echo "  ❌ Download failed: $folder"
-            return 1
-        fi
-    }
-    
-    # Download each missing model
-    DOWNLOAD_SUCCESS=true
-    
-    if [ "$SVD_MISSING" = true ]; then
-        if ! download_model "stabilityai/stable-video-diffusion-img2vid-xt-1-1" "stable-video-diffusion-img2vid-xt-1-1"; then
-            DOWNLOAD_SUCCESS=false
-        fi
-    fi
-    
-    if [ "$DEPTH_MISSING" = true ]; then
-        if ! download_model "tencent/DepthCrafter" "DepthCrafter"; then
-            DOWNLOAD_SUCCESS=false
-        fi
-    fi
-    
-    if [ "$STEREO_MISSING" = true ]; then
-        if ! download_model "TencentARC/StereoCrafter" "StereoCrafter"; then
-            DOWNLOAD_SUCCESS=false
-        fi
-    fi
-    
-    echo ""
-    if [ "$DOWNLOAD_SUCCESS" = true ]; then
-        echo "✅ All model downloads completed successfully"
-        echo "   Total size: $(du -sh . 2>/dev/null | cut -f1)"
-    else
-        echo "⚠️  Some downloads failed"
-        echo "   The application may fail to start if models are required"
-        echo "   Check HF_TOKEN and try again"
-    fi
+    echo "❌ ERROR: Some weights failed to download!"
+    exit 1
 fi
 
-cd .. || { echo "ERROR: Cannot cd back to root"; exit 1; }
-
-# Ensure output folders exist
-echo "Creating output folders if missing..."
-mkdir -p input_source_clips output_depthmaps output_splatted output_inpainted final_videos
-
+echo "✅ All weights verified"
 echo ""
+
+cd ..
+
 echo "=========================================="
-echo "Setup Complete!"
+echo "Starting StereoCrafter WEBUI"
 echo "=========================================="
 echo ""
-echo "Startup log saved to: /tmp/stereocrafter-startup.log"
+echo "Access URLs:"
+echo "  Local: http://0.0.0.0:7860"
+echo "  Runpod: Use the URL provided in Runpod dashboard"
 echo ""
-echo "Starting StereoCrafter WEBUI..."
-echo "  Access URL: http://0.0.0.0:7860"
-echo "  Or use the VAST.ai provided URL"
+echo "Startup log: /tmp/stereocrafter-startup.log"
 echo ""
 
-# Start File Manager (filebrowser) in background
-# echo "Starting File Manager..."
-# mkdir -p /app  # For database
-# if [ ! -f /usr/local/bin/filebrowser ]; then
-#    echo "Downloading filebrowser..."
-#    wget -q https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz
-#    tar -xzf linux-amd64-filebrowser.tar.gz
-#    mv filebrowser /usr/local/bin/
-#    chmod +x /usr/local/bin/filebrowser
-# fi
-# /usr/local/bin/filebrowser --config /config/settings.json &
-# echo "File Manager started on port 80"
-
-# Start the application (this should keep running)
-echo "Launching webui.py..."
-export PYTHONPATH="/workspace/WEBUI-StereoCrafter:$PYTHONPATH"
-python webui.py
+# Start the WEBUI (this keeps the container running)
+exec python webui.py --share --server-name 0.0.0.0 --server-port 7860
