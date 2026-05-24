@@ -1002,6 +1002,24 @@ class MergingWebUI:
                 num_frames = len(inpainted_reader)
                 fps = inpainted_reader.get_avg_fps()
                 video_stream_info = get_video_stream_info(inpainted_video_path)
+
+                # Robust frame count (prevents 1-frame drift on re-encoded splatted/inpainted depth videos)
+                try:
+                    from core.common.video_io import get_video_stream_info as core_gsi
+                    robust_info = core_gsi(inpainted_video_path)
+                    if robust_info:
+                        for k in ("nb_frames", "nb_read_frames"):
+                            val = robust_info.get(k)
+                            if val:
+                                try:
+                                    n = int(float(val))
+                                    if n > 0:
+                                        num_frames = n
+                                        break
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
                 
                 # Determine Output Dimensions
                 sample_splatted = splatted_reader[0].asnumpy()

@@ -293,13 +293,28 @@ class RenderProcessor:
                 batch_video_numpy = input_video_reader.get_batch(batch_indices).asnumpy()
                 batch_depth_numpy_raw = depth_map_reader.get_batch(batch_indices).asnumpy()
 
-                # Adjust batch size if depth reader returned fewer frames (e.g., due to EOF)
+                # Strict frame count enforcement (Phase 2 revision)
+                # We must deliver exactly the planned number of frames.
+                # Never silently drop the last frame again.
                 actual_batch_size = min(batch_video_numpy.shape[0], batch_depth_numpy_raw.shape[0])
                 if actual_batch_size < len(batch_indices):
-                    logger.warning(f"Batch size adjusted from {len(batch_indices)} to {actual_batch_size} due to insufficient depth frames.")
-                    batch_indices = batch_indices[:actual_batch_size]
-                    batch_video_numpy = batch_video_numpy[:actual_batch_size]
-                    batch_depth_numpy_raw = batch_depth_numpy_raw[:actual_batch_size]
+                    missing = len(batch_indices) - actual_batch_size
+                    logger.error(
+                        f"Depth reader short by {missing} frame(s) on batch starting at {i}. "
+                        f"Planned {len(batch_indices)}, got {actual_batch_size}. "
+                        "This is the classic 'last frame dropped' bug. Padding last valid frame to preserve count."
+                    )
+                    # Pad with the last successfully read frame to keep total output count correct
+                    if actual_batch_size > 0:
+                        pad_video = np.repeat(batch_video_numpy[-1:][0:1], missing, axis=0)
+                        pad_depth = np.repeat(batch_depth_numpy_raw[-1:][0:1], missing, axis=0)
+                        batch_video_numpy = np.concatenate([batch_video_numpy, pad_video], axis=0)
+                        batch_depth_numpy_raw = np.concatenate([batch_depth_numpy_raw, pad_depth], axis=0)
+                        batch_indices = batch_indices  # keep original planned indices for logging
+                    else:
+                        # Complete failure on this batch — better to abort than produce garbage
+                        logger.error("Complete batch failure from depth reader. Aborting render to avoid corrupt output.")
+                        raise RuntimeError("Depth reader returned zero frames for a non-empty batch")
 
                 if flip_horizontal:
                     batch_video_numpy = np.flip(batch_video_numpy, axis=2).copy()
@@ -442,6 +457,22 @@ class RenderProcessor:
                     logger.debug(
                         f"==> VERIFIED: Output file created successfully at {final_output_video_path} ({file_size / (1024 * 1024):.2f} MB)"
                     )
+
+                    # Phase 2 strict verification: output must have exactly the planned number of frames
+                    try:
+                        from core.common.video_io import get_canonical_frame_count
+                        actual_out = get_canonical_frame_count(final_output_video_path)
+                        if actual_out != total_frames_to_process:
+                            logger.error(
+                                f"POST-WRITE FRAME COUNT MISMATCH: expected {total_frames_to_process}, "
+                                f"got {actual_out} in output {os.path.basename(final_output_video_path)}. "
+                                "This indicates a remaining reader/decode bug."
+                            )
+                            encoding_successful = False
+                        else:
+                            logger.info(f"[VERIFIED] Output has exact canonical frame count: {actual_out}")
+                    except Exception as e:
+                        logger.warning(f"Could not verify output frame count: {e}")
                 else:
                     logger.error(f"==> ERROR: Output file exists but is EMPTY (0 bytes) at {final_output_video_path}")
                     encoding_successful = False

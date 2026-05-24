@@ -864,26 +864,22 @@ def load_pre_rendered_depth(
     )
 
     if depth_map_path.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
-        # Determine total frames available
-        total_depth_frames_available = 0
+        # Use the single canonical frame count (Phase 1 unification)
         try:
-            nb = None
-            if isinstance(depth_stream_info, dict):
-                nb = depth_stream_info.get("nb_frames")
-                if nb in (None, "", "N/A"):
-                    nb = depth_stream_info.get("num_frames") or depth_stream_info.get("nb_read_frames")
-            # Handle string inputs like "N/A"
-            if nb not in (None, "", "N/A"):
-                try:
-                    total_depth_frames_available = int(float(nb))
-                except (ValueError, TypeError):
-                    total_depth_frames_available = 0
-            if total_depth_frames_available <= 0:
+            from core.common.video_io import get_canonical_frame_count
+            total_depth_frames_available = get_canonical_frame_count(depth_map_path)
+        except Exception:
+            total_depth_frames_available = 0
+
+        if total_depth_frames_available <= 0:
+            # Final safety net (should rarely trigger)
+            try:
                 _tmp = VideoReader(depth_map_path, ctx=cpu(0))
                 total_depth_frames_available = len(_tmp)
                 del _tmp
-        except Exception as e:
-            logger.warning(f"Could not determine depth frame count for '{depth_map_path}': {e}")
+            except Exception as e:
+                logger.warning(f"Could not determine depth frame count for '{depth_map_path}': {e}")
+                total_depth_frames_available = 0
 
         total_depth_frames_to_process = total_depth_frames_available
         if process_length != -1 and process_length < total_depth_frames_available:

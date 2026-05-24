@@ -437,27 +437,30 @@ def read_video_frames(
 
     fps = float(video_reader.get_avg_fps())  # Use actual FPS from the reader
 
-    # Handle case where len(video_reader) might return a string
-    try:
-        total_frames_available_raw = len(video_reader)
-        if isinstance(total_frames_available_raw, int) and total_frames_available_raw > 0:
-            total_frames_available = total_frames_available_raw
-        else:
+    # --- Use the single canonical frame count (Phase 1 unification) ---
+    total_frames_available = get_canonical_frame_count(video_path)
+    if total_frames_available > 0:
+        logger.debug(f"[VIDEO_READER] Canonical count = {total_frames_available} for {os.path.basename(video_path)}")
+    else:
+        # Last-resort direct len (should almost never happen now)
+        try:
+            raw_len = len(video_reader)
+            total_frames_available = raw_len if isinstance(raw_len, int) and raw_len > 0 else 0
+        except Exception:
             total_frames_available = 0
-    except (ValueError, TypeError):
-        total_frames_available = 0
 
-    total_frames_to_process = total_frames_available  # Use available frames directly
+    # Always fetch stream info for color metadata / strict FFmpeg path
+    video_stream_info = get_video_stream_info(video_path)
+
+    total_frames_to_process = total_frames_available
     if total_frames_available > 0 and process_length != -1 and process_length < total_frames_available:
         total_frames_to_process = process_length
 
     logger.debug(
         f"==> VideoReader initialized. Final processing dimensions: "
         f"{actual_processed_width}x{actual_processed_height}. "
-        f"Total frames for processing: {total_frames_to_process}"
+        f"Total frames for processing: {total_frames_to_process} (robust count preferred)"
     )
-
-    video_stream_info = get_video_stream_info(video_path)  # Get stream info for FFmpeg later
 
     # If strict FFmpeg decode is requested, swap in an FFmpeg-backed reader for frame fetch.
     # This keeps decode/colorspace conversion consistent across preview + renders for problem clips.
@@ -508,13 +511,18 @@ _INFO_CACHE: dict = {}
 
 
 def get_video_stream_info(video_path: str) -> Optional[dict]:
-    """Get video stream information using ffprobe.
+    """Get comprehensive video stream information using ffprobe (robust version).
+
+    Includes nb_frames with -count_frames fallback and duration-based guessing.
+    This is the canonical implementation used across Splatting, Inpainting, Merging,
+    and core render paths to eliminate off-by-one frame count errors.
 
     Args:
         video_path: Path to the video file
 
     Returns:
-        Dictionary containing stream info (width, height, codec, etc.) or None if unavailable
+        Dictionary containing stream info (including nb_frames when available)
+        or None if unavailable
     """
     global _FFPROBE_AVAIL, _INFO_CACHE
     if not video_path:
@@ -532,29 +540,167 @@ def get_video_stream_info(video_path: str) -> Optional[dict]:
         return None
 
     try:
+        # Robust query: explicitly request nb_frames + duration for reliable counting
         cmd = [
             "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,codec_name,profile,pix_fmt,color_range,color_primaries,transfer_characteristics,color_space,r_frame_rate",
-            "-show_entries",
-            "side_data=mastering_display_metadata,max_content_light_level",
-            "-of",
-            "json",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,profile,pix_fmt,color_range,color_primaries,"
+                             "transfer_characteristics,color_space,r_frame_rate,width,height,"
+                             "nb_frames,duration,side_data_list",
+            "-show_entries", "side_data=mastering_display_metadata,max_content_light_level",
+            "-of", "json",
             video_path,
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(res.stdout)
-        if "streams" in data and data["streams"]:
-            info = {k: v for k, v in data["streams"][0].items() if v and v not in ("N/A", "und", "unknown")}
-            _INFO_CACHE[video_path] = info
-            return info
-    except Exception:
-        pass
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", timeout=60)
+        raw_stdout = result.stdout
+        data = json.loads(raw_stdout)
+
+        stream_info: dict = {}
+        if "streams" in data and len(data["streams"]) > 0:
+            s = data["streams"][0]
+
+            # Core fields
+            for key in ["codec_name", "profile", "pix_fmt", "color_range", "color_primaries",
+                        "transfer_characteristics", "color_space", "r_frame_rate",
+                        "width", "height", "nb_frames", "duration", "nb_read_frames"]:
+                if key in s and s[key] not in (None, "", "N/A", "und", "unknown"):
+                    stream_info[key] = s[key]
+
+            # Side data (HDR etc.)
+            if s.get("side_data_list"):
+                for sd in s["side_data_list"]:
+                    if sd.get("side_data_type") == "Mastering display metadata":
+                        stream_info["mastering_display_metadata"] = sd.get("mastering_display_metadata")
+                    if sd.get("side_data_type") == "Content light level metadata":
+                        stream_info["max_content_light_level"] = sd.get("max_content_light_level")
+
+        # If nb_frames missing or zero, force accurate count with -count_frames
+        nb_val = stream_info.get("nb_frames")
+        if not nb_val or str(nb_val).strip() in ("0", "0.0"):
+            logger.info(f"[VIDEO_READER] nb_frames missing/zero for {os.path.basename(video_path)}; running ffprobe -count_frames")
+            cmd_count = [
+                "ffprobe",
+                "-count_frames",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=nb_read_frames",
+                "-of", "json",
+                video_path,
+            ]
+            try:
+                res_count = subprocess.run(cmd_count, capture_output=True, text=True, check=True,
+                                           encoding="utf-8", timeout=120)
+                data_count = json.loads(res_count.stdout)
+                if "streams" in data_count and len(data_count["streams"]) > 0:
+                    s_count = data_count["streams"][0]
+                    if "nb_read_frames" in s_count and s_count["nb_read_frames"]:
+                        stream_info["nb_frames"] = s_count["nb_read_frames"]
+                        stream_info["nb_read_frames"] = s_count["nb_read_frames"]
+                        logger.info(f"[VIDEO_READER] -count_frames gave nb_frames={stream_info['nb_frames']} for {os.path.basename(video_path)}")
+            except Exception as e:
+                logger.warning(f"[VIDEO_READER] -count_frames failed for {video_path}: {e}")
+
+        # Final fallback: derive from duration * r_frame_rate
+        if not stream_info.get("nb_frames") or str(stream_info.get("nb_frames", "")).strip() in ("0", "0.0"):
+            dur = stream_info.get("duration")
+            rate = stream_info.get("r_frame_rate")
+            if dur and rate:
+                try:
+                    duration_f = float(dur)
+                    if "/" in rate:
+                        num, den = rate.split("/")
+                        fps = float(num) / float(den) if float(den) != 0 else 0.0
+                    else:
+                        fps = float(rate)
+                    if duration_f > 0 and fps > 0:
+                        guessed = str(round(duration_f * fps))
+                        stream_info["nb_frames"] = guessed
+                        logger.debug(f"[VIDEO_READER] Guessed nb_frames={guessed} from duration*fps for {os.path.basename(video_path)}")
+                except Exception:
+                    pass
+
+        # Filter junk values
+        cleaned = {}
+        for k, v in stream_info.items():
+            if v is not None and str(v).strip() not in ("N/A", "und", "unknown", "0", "0.0"):
+                cleaned[k] = v
+
+        if cleaned:
+            _INFO_CACHE[video_path] = cleaned
+            return cleaned
+
+    except Exception as e:
+        logger.debug(f"[VIDEO_READER] get_video_stream_info failed for {video_path}: {e}")
+
     return None
+
+
+def get_canonical_frame_count(video_path: str, prefer_count_frames: bool = True, timeout: int = 120) -> int:
+    """Return the single most reliable frame count for any video or depth map.
+
+    This is the authoritative source of truth for the entire pipeline
+    (DepthCrafter → Splatting → Inpainting → Merging) to eliminate
+    off-by-one and "last frame dropped" problems.
+
+    Strategy:
+    1. Use the robust get_video_stream_info (which already performs
+       nb_frames + -count_frames fallback + duration guess).
+    2. If that yields a positive count, return it.
+    3. Otherwise fall back to opening with Decord and using len().
+
+    The returned number should be used for:
+    - Initial planning of total_frames_to_process
+    - Enforcing exact frame count in all processing loops
+    - Post-write verification
+
+    Args:
+        video_path: Path to the video/depth file
+        prefer_count_frames: (kept for future; current robust logic already prefers it)
+        timeout: Seconds for expensive -count_frames operation
+
+    Returns:
+        Positive integer frame count, or 0 on failure
+    """
+    if not video_path or not os.path.exists(video_path):
+        return 0
+
+    # 1. Try robust metadata first (the main improvement)
+    try:
+        info = get_video_stream_info(video_path)
+        if info:
+            for key in ("nb_frames", "nb_read_frames"):
+                val = info.get(key)
+                if val:
+                    try:
+                        n = int(float(val))
+                        if n > 0:
+                            logger.debug(
+                                f"[CANONICAL_COUNT] Using {key}={n} from robust ffprobe "
+                                f"for {os.path.basename(video_path)}"
+                            )
+                            return n
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as e:
+        logger.debug(f"[CANONICAL_COUNT] Robust info failed for {video_path}: {e}")
+
+    # 2. Decord fallback (reliable for actual decodable frames)
+    try:
+        vr = VideoReader(video_path, ctx=cpu(0))
+        n = len(vr)
+        del vr
+        if n > 0:
+            logger.debug(
+                f"[CANONICAL_COUNT] Decord len() fallback gave {n} for "
+                f"{os.path.basename(video_path)}"
+            )
+            return n
+    except Exception as e:
+        logger.warning(f"[CANONICAL_COUNT] Decord fallback failed for {video_path}: {e}")
+
+    logger.error(f"[CANONICAL_COUNT] Could not determine any frame count for {video_path}")
+    return 0
 
 
 def read_video_frames_decord(
@@ -587,6 +733,17 @@ def read_video_frames_decord(
     dw, dh = (set_res_width, set_res_height) if set_res_width and set_res_height else (ow, oh)
     vid = VideoReader(video_path, ctx=decord_ctx, width=dw, height=dh)
     total = len(vid)
+    # Prefer robust count now that get_video_stream_info is authoritative
+    try:
+        robust = get_video_stream_info(video_path)
+        for k in ("nb_frames", "nb_read_frames"):
+            if robust and robust.get(k):
+                n = int(float(robust[k]))
+                if n > 0:
+                    total = n
+                    break
+    except Exception:
+        pass
     fps = target_fps if target_fps > 0 else vid.get_avg_fps()
     stride = max(round(vid.get_avg_fps() / fps), 1)
     idxs = list(range(0, total, stride))

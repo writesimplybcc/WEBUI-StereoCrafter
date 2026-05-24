@@ -1472,7 +1472,24 @@ class InpaintingWebUI:
         try:
             # Load video
             vr = VideoReader(input_video_path, ctx=cpu(0))
+            # Prefer robust count (fixes frame mismatch with DepthCrafter-produced assets)
             total_frames = len(vr)
+            try:
+                from core.common.video_io import get_video_stream_info as core_gsi
+                info = core_gsi(input_video_path)
+                if info:
+                    for k in ("nb_frames", "nb_read_frames"):
+                        if info.get(k):
+                            try:
+                                n = int(float(info[k]))
+                                if n > 0:
+                                    total_frames = n
+                                    break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             fps = vr.get_avg_fps()
 
             if process_length > 0:

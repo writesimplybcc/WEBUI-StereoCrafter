@@ -39,6 +39,7 @@ from .forward_warp import ForwardWarpStereo
 from .fusion_export import FusionSidecarGenerator
 
 from .preview_rendering import PreviewRenderer
+from .render_processor import RenderProcessor
 
 from .analysis_service import AnalysisService
 

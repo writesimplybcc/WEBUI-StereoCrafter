@@ -86,6 +86,7 @@ try:
         ProcessingSettings,
         ProcessingTask,
         BatchSetupResult,
+        RenderProcessor,
     )
     from core.splatting.depth_processing import (
         DEPTH_VIS_TV10_BLACK_NORM,
@@ -980,6 +981,13 @@ class SplatterWebUI:
             depth_blur_size_x = 0.0,
             depth_blur_size_y = 0.0,
         ):
+        # DEPRECATED - NO LONGER CALLED FROM MAIN PATH (as of 2026-05 migration)
+        # The main splatting processing now uses core.splatting.RenderProcessor.render_video
+        # via the modern BatchProcessor/RenderProcessor path for correct frame counts,
+        # better pre-processing, and strict verification.
+        # This method is retained only for backwards compatibility / direct testing.
+        logger.warning("LEGACY depthSplatting called directly (should not happen in normal GUI flow). Use RenderProcessor instead.")
+
         logger.debug("==> Initializing ForwardWarpStereo module")
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. Splatting requires a CUDA-enabled GPU.")
@@ -1076,6 +1084,32 @@ class SplatterWebUI:
                     logger.error(f"Error seeking/reading depth map batch starting at index {i}: {e}. Falling back to a potentially blank read.")
                     batch_depth_numpy_raw = depth_map_reader.get_batch(current_frame_indices).asnumpy()
                 t_end_io = time.perf_counter()
+
+                # Strict frame count enforcement (back-ported from RenderProcessor)
+                # Prevents the classic "last frame dropped" bug when decord get_batch()
+                # returns fewer frames than requested on the final (partial) batch.
+                planned = len(current_frame_indices)
+                actual_video = batch_frames_numpy.shape[0]
+                actual_depth = batch_depth_numpy_raw.shape[0]
+                actual = min(actual_video, actual_depth)
+                if actual < planned:
+                    missing = planned - actual
+                    logger.warning(
+                        f"Reader short by {missing} frame(s) on batch starting at {i}. "
+                        f"Planned {planned}, got video={actual_video} depth={actual_depth}. "
+                        "Padding last valid frame to preserve exact output frame count."
+                    )
+                    if actual > 0:
+                        if actual_video < planned:
+                            pad_v = np.repeat(batch_frames_numpy[-1:][0:1], planned - actual_video, axis=0)
+                            batch_frames_numpy = np.concatenate([batch_frames_numpy, pad_v], axis=0)
+                        if actual_depth < planned:
+                            pad_d = np.repeat(batch_depth_numpy_raw[-1:][0:1], planned - actual_depth, axis=0)
+                            batch_depth_numpy_raw = np.concatenate([batch_depth_numpy_raw, pad_d], axis=0)
+                    else:
+                        logger.error("Complete batch failure from reader(s). Aborting this task to avoid corrupt output.")
+                        encoding_successful = False
+                        break
 
                 file_frame_idx = current_frame_indices[0]
                 task_name = "LowRes" if is_low_res_task else "HiRes"
@@ -2578,7 +2612,9 @@ class SplatterWebUI:
             os.makedirs(current_output_subdir, exist_ok=True)
             output_video_path_base = os.path.join(current_output_subdir, f"{video_name}.mp4")
 
-            completed_splatting_task = self.depthSplatting(
+            # Use the modern RenderProcessor (no longer calling legacy depthSplatting)
+            renderer = RenderProcessor(stop_event=self.stop_event, progress_queue=self.progress_queue)
+            completed_splatting_task = renderer.render_video(
                 input_video_reader=video_reader_input,
                 depth_map_reader=depth_reader_input,
                 total_frames_to_process=min(total_frames_input, total_frames_depth),
@@ -2587,7 +2623,6 @@ class SplatterWebUI:
                 target_output_height=current_processed_height,
                 target_output_width=current_processed_width,
                 max_disp=actual_max_disp_pixels,
-                process_length=settings["process_length"],
                 batch_size=task["batch_size"],
                 dual_output=settings["dual_output"],
                 zero_disparity_anchor_val=current_zero_disparity_anchor,
@@ -2603,7 +2638,19 @@ class SplatterWebUI:
                 depth_dilate_size_x=current_depth_dilate_size_x,
                 depth_dilate_size_y=current_depth_dilate_size_y,
                 depth_blur_size_x=current_depth_blur_size_x,
-                depth_blur_size_y=current_depth_blur_size_y
+                depth_blur_size_y=current_depth_blur_size_y,
+                # Additional modern parameters (safe defaults)
+                depth_dilate_left=getattr(self, "depth_dilate_left", 0.0),
+                depth_blur_left=getattr(self, "depth_blur_left", 0),
+                depth_blur_left_mix=getattr(self, "depth_blur_left_mix", 0.5),
+                flip_horizontal=False,
+                skip_lowres_preproc=getattr(self, "skip_lowres_preproc", False),
+                color_tags_mode=getattr(self, "color_tags_mode", "Auto"),
+                encoding_options=None,
+                dnxhr_fullres_split=False,
+                dnxhr_profile="HQX",
+                is_test_mode=False,
+                test_target_frame_idx=None,
             )
 
             if self.stop_event.is_set():
@@ -3114,7 +3161,7 @@ class SplatterWebUI:
             video_files = self._scan_video_files(self.input_source_clips)
             
             if not video_files:
-                return gr.Dropdown(choices=[]), "⚠️ No video files found in input folder"
+                return gr.Dropdown(choices=[], value=None), "⚠️ No video files found in input folder"
             
             # Extract just the filenames for the dropdown
             video_names = [os.path.basename(f) for f in video_files]
@@ -3126,7 +3173,7 @@ class SplatterWebUI:
             
         except Exception as e:
             logger.error(f"Video list refresh error: {e}")
-            return gr.Dropdown(choices=[]), f"❌ Error: {str(e)}"
+            return gr.Dropdown(choices=[], value=None), f"❌ Error: {str(e)}"
     
     def detect_video_frames(self, selected_video: str):
         """
@@ -4997,18 +5044,22 @@ def read_video_frames(
 
     fps = video_reader.get_avg_fps()  # Use actual FPS from the reader
 
-    # Base available frames on the reader and authoritative sources
-    total_frames_available = min(total_frames_original, len(video_reader))
+    # Use the single canonical frame count (Phase 1 unification)
+    try:
+        from core.common.video_io import get_canonical_frame_count
+        canonical_n = get_canonical_frame_count(video_path)
+        if canonical_n > 0:
+            total_frames_available = canonical_n
+            logger.debug(f"Using canonical frame count: {canonical_n}")
+    except Exception:
+        pass  # fall back to the min logic above
 
-    video_stream_info = get_video_stream_info(video_path)  # Get stream info for FFmpeg later
-    nb_frames = video_stream_info.get('nb_frames') if video_stream_info else None
-    if nb_frames is not None:
-        try:
-            ffprobe_frames = int(nb_frames)
-            total_frames_available = min(total_frames_available, ffprobe_frames)
-            logger.debug(f"Using ffprobe frame count: {ffprobe_frames}, capped at VideoReader len: {len(video_reader)}")
-        except (ValueError, TypeError):
-            pass
+    # Still get stream info for FFmpeg color tags etc.
+    try:
+        from core.common.video_io import get_video_stream_info as core_get_video_stream_info
+        video_stream_info = core_get_video_stream_info(video_path) or get_video_stream_info(video_path)
+    except Exception:
+        video_stream_info = get_video_stream_info(video_path)
 
     total_frames_to_process = total_frames_available
     if process_length != -1 and process_length < total_frames_available:
