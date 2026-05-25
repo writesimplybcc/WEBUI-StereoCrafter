@@ -1,0 +1,105 @@
+# Dockerfile.vast - Vast.ai optimized StereoCrafter WEBUI
+# 
+# Purpose: Single-file Docker image for Vast.ai that avoids the RunPod-specific
+# base image (which causes CDI GPU device injection failures on Vast).
+#
+# Key differences from the RunPod variant:
+# - Uses Vast's officially recommended + heavily cached base image
+#   (vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04)
+# - Vast hosts already have the lower layers cached → much faster instance startup
+# - Same runtime behavior and startup scripts as the RunPod image
+#
+# Build command:
+#   docker build -f Dockerfile.vast -t writesimplybcc/stereocrafter-webui:dev-vast .
+#
+# Usage on Vast.ai:
+#   1. Build and push the image (or use a registry)
+#   2. In your Vast template, select "Docker" and use the :dev-vast tag
+#   3. The image will start with FileBrowser (port 8080) + Gradio WEBUI (port 7860)
+#
+# Notes:
+# - Runs as root for maximum compatibility with Vast Docker templates
+# - Startup scripts are still named "runpod-*" internally (legacy, fully functional)
+# - Persistent storage is expected at /workspace (standard on both RunPod and Vast)
+
+FROM vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04
+
+# Ensure root for the entire build and runtime (matches current behavior)
+USER root
+
+# ============================================================
+# Base layer setup (equivalent to Dockerfile.base)
+# ============================================================
+
+WORKDIR /workspace
+
+# Install required system packages (Vast base already provides most CUDA/Python tools)
+RUN apt-get update && \
+    apt-get install -y python3-tk git git-lfs curl && \
+    git lfs install && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Clone the project (same as RunPod base for parity)
+RUN git clone https://github.com/writesimplybcc/WEBUI-StereoCrafter.git && cd WEBUI-StereoCrafter
+
+WORKDIR /workspace/WEBUI-StereoCrafter
+
+# Python dependencies (requirements-docker.txt pins torch 2.9.1 + cu128 index)
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt && \
+    pip install --no-cache-dir --upgrade huggingface_hub[cli]
+
+# Git credential helper (needed for HF private/gated model downloads)
+RUN git config --global credential.helper store
+
+# PyTorch memory optimization (same as RunPod variant)
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# ============================================================
+# Application layer + FileBrowser + startup scripts
+# (equivalent to the second stage in Dockerfile)
+# ============================================================
+
+# Install FileBrowser binary
+RUN curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+
+# Core application files
+COPY webui.py .
+COPY requirements-docker.txt .
+COPY WEBUI_StereoCrafter_GPU_Presets_Guide.md .
+
+# Startup scripts (legacy "runpod" names are kept for now - they work everywhere)
+COPY runpod-docker-startup.sh .
+
+# WEBUI source folders
+COPY gui/ ./gui/
+COPY stereocrafter_ui/ ./stereocrafter_ui/
+
+# Core dependencies
+COPY pipelines/ ./pipelines/
+COPY core/ ./core/
+COPY depthcrafter/ ./depthcrafter/
+COPY dependency/ ./dependency/
+
+# Optional development / test data folders (safe to keep)
+COPY output_inpainted/ ./output_inpainted/
+COPY final_videos/ ./final_videos/
+COPY input_source_clips/ ./input_source_clips/
+COPY output_depthmaps/ ./output_depthmaps/
+COPY output_splatted/ ./output_splatted/
+
+# Copy the main entrypoint script to a stable location and fix Windows line endings
+COPY start-with-filebrowser.sh /workspace/start-with-filebrowser.sh
+
+# Fix CRLF in both startup scripts and make them executable
+RUN sed -i 's/\r//' /workspace/start-with-filebrowser.sh \
+        /workspace/WEBUI-StereoCrafter/runpod-docker-startup.sh && \
+    chmod +x /workspace/start-with-filebrowser.sh \
+             /workspace/WEBUI-StereoCrafter/runpod-docker-startup.sh
+
+# Expose Gradio (7860) and FileBrowser (8080)
+EXPOSE 7860 8080
+
+# Default command - starts FileBrowser in background then runs the WEBUI startup script
+CMD ["/workspace/start-with-filebrowser.sh"]
