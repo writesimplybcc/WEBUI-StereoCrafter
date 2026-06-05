@@ -1,0 +1,17 @@
+# Exclude heavy folders from Docker build context
+venv/
+weights/
+.git/
+.gradio/
+.vscode/
+.kilo/
+.qwen/
+
+# Exclude zip and tar archives
+*.zip
+*.tar.gz
+*.exe
+*.db
+build.log
+build*.log
+debug.log

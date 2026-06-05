@@ -698,7 +698,12 @@ class InpaintingGUI(ThemedTk):
             logger.error(f"Final output frames for encoding are empty or None after preparation for {base_video_name}.")
             return None
 
-        return final_output_frames_for_encoding
+        del frames_output_final
+        if 'adjusted_frames_output' in locals():
+            del adjusted_frames_output
+        torch.cuda.empty_cache()
+
+        return final_output_frames_for_encoding.cpu()
     
     def _find_high_res_match(self, low_res_video_path: str) -> Optional[str]:
         """
@@ -1704,6 +1709,10 @@ class InpaintingGUI(ThemedTk):
             base_video_name=base_video_name,
             is_dual_input=is_dual_input,
         )
+
+        release_cuda_memory()
+        torch.cuda.empty_cache()
+        gc.collect()
 
         if final_output_frames_for_encoding is None or final_output_frames_for_encoding.numel() == 0:
             logger.error(f"Final output frames are empty after finalization for {base_video_name}.")

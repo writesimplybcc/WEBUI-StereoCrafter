@@ -1,0 +1,44 @@
+# Dockerfile.vastbase - BASE IMAGE for VAST.AI optimized StereoCrafter WEBUI
+# Build once, use many times
+# This includes all slow-to-build dependencies
+
+FROM vastai/base-image:cuda-12.8.1-cudnn-devel-ubuntu22.04
+
+# Set working directory
+WORKDIR /workspace
+ 
+# Install required system packages (Vast base already provides most CUDA/Python tools)
+RUN apt-get update && \
+    apt-get install -y python3-tk git git-lfs curl && \
+    git lfs install && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set PATH to include Miniforge bin directory first
+ENV PATH="/opt/miniforge3/bin:${PATH}"
+
+# Clone from your fork (writesimplybcc/StereoCrafter)
+RUN git clone https://github.com/writesimplybcc/WEBUI-StereoCrafter.git && cd WEBUI-StereoCrafter
+
+# Set working directory to StereoCrafter
+WORKDIR /workspace/WEBUI-StereoCrafter
+
+# Install Python dependencies (this is the slow part)
+# Use the pip from the Vast base's Miniforge installation via PATH
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt && \
+    pip install --no-cache-dir --upgrade huggingface_hub[cli]
+
+# Git credential helper (needed for HF private/gated model downloads)
+RUN git config --global credential.helper store
+
+# PyTorch memory optimization (same as RunPod variant)
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# Ensure root for the entire build and runtime (matches current behavior)
+USER root
+# Override the base image's entrypoint to allow normal container execution
+ENTRYPOINT []
+
+# Expose Gradio (7860) and FileBrowser (8080)
+EXPOSE 7860 8080

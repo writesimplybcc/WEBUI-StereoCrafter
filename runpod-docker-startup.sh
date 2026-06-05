@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 set -e
 
 echo "=========================================="
@@ -27,6 +27,9 @@ if [ -d "stable-video-diffusion-img2vid-xt-1-1" ] && \
     echo "âœ… All model weights already downloaded"
 else
     echo "Downloading model weights..."
+    
+    # Remove any stale lock files from previous interrupted download attempts
+    find . -name "*.lock" -type f -delete 2>/dev/null || true
     
     # Configure git credential helper
     git config --global credential.helper store
