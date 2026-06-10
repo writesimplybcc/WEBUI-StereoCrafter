@@ -1,0 +1,19 @@
+{
+    "convergence_plane": 0.5,
+    "max_disparity": 30.0,
+    "gamma": 1.0,
+    "input_bias": 0.0,
+    "depth_dilate_size_x": 3.0,
+    "depth_dilate_size_y": 3.0,
+    "depth_blur_size_x": 5.0,
+    "depth_blur_size_y": 5.0,
+    "depth_dilate_left": 0.0,
+    "depth_blur_left": 0.0,
+    "depth_blur_left_mix": 0.5,
+    "selected_depth_map": "",
+    "left_border": 0.0,
+    "right_border": 0.0,
+    "border_mode": null,
+    "auto_border_L": null,
+    "auto_border_R": null
+}

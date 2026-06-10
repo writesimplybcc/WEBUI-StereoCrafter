@@ -500,7 +500,65 @@ class InpaintingWebUI:
         self.progress_queue = queue.Queue()
         self.processing_thread = None
         self.pipeline = None
-        
+
+    def read_input_resolution(self, input_folder):
+        """Scan the input folder, read the first splatted video, and auto-adjust mask kernel defaults."""
+        try:
+            if not os.path.isdir(input_folder):
+                return (
+                    gr.update(value="❌ Input folder does not exist"),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(value="N/A"),
+                )
+
+            videos = sorted(glob.glob(os.path.join(input_folder, "*.mp4")))
+            splatted = [
+                v for v in videos
+                if "_splatted2" in os.path.basename(v) or "_splatted4" in os.path.basename(v)
+            ]
+            if not splatted:
+                return (
+                    gr.update(value="⚠️ No splatted videos found in folder"),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(value="N/A"),
+                )
+
+            first_video = splatted[0]
+            frames, fps, orig_h, orig_w, proc_h, proc_w, _ = read_video_frames_decord(
+                first_video, process_length=1
+            )
+
+            REFERENCE_WIDTH_FOR_DEFAULTS = 640
+            DEFAULT_DILATE_AT_REF = 5
+            DEFAULT_BLUR_AT_REF = 10
+            scale_factor = orig_w / REFERENCE_WIDTH_FOR_DEFAULTS
+            scaled_dilate = max(1, int(round(DEFAULT_DILATE_AT_REF * scale_factor)))
+            scaled_blur = max(3, int(round(DEFAULT_BLUR_AT_REF * scale_factor)))
+
+            res_str = f"{orig_w}x{orig_h} original | inpainting width: {orig_w // 2}px (scale={scale_factor:.2f})"
+
+            status_msg = (
+                f"✓ Read {os.path.basename(first_video)}: {orig_w}x{orig_h} → "
+                f"auto-adjusted Dilate={scaled_dilate}, Blur={scaled_blur}"
+            )
+
+            return (
+                gr.update(value=status_msg),
+                gr.update(value=float(scaled_dilate)),
+                gr.update(value=float(scaled_blur)),
+                gr.update(value=res_str),
+            )
+        except Exception as e:
+            logger.error(f"Failed to read input resolution: {e}", exc_info=True)
+            return (
+                gr.update(value=f"❌ Error: {e}"),
+                gr.update(),
+                gr.update(),
+                gr.update(value="Error"),
+            )
+
 
 
     def load_config(self):
@@ -628,21 +686,27 @@ class InpaintingWebUI:
             # Folders Section (Top)
             with gr.Group():
                 gr.Markdown("### Folders")
-                input_folder = gr.Textbox(
-                    label="Input Folder",
-                    value=self.app_config.get("input_folder", "./output_splatted/lowres"),
-                    info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
-                )
-                hires_blend_folder = gr.Textbox(
-                    label="Hi-Res Blend Folder",
-                    value=self.app_config.get("hires_blend_folder", "./output_splatted/hires"),
-                    info="Path to hi-res splatted videos for final blending (optional)."
-                )
-                output_folder = gr.Textbox(
-                    label="Output Folder",
-                    value=self.app_config.get("output_folder", "./output_inpainted"),
-                    info="Choose the directory where the processed (inpainted) videos will be saved. Output will be Side-by-Side (original | inpainted) for quad inputs, or only the inpainted right eye for dual inputs."
-                )
+                with gr.Row():
+                    input_folder = gr.Textbox(
+                        label="Input Folder",
+                        value=self.app_config.get("input_folder", "./output_splatted/lowres"),
+                        info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
+                    )
+                    read_res_button = gr.Button("Read Input Resolution", variant="secondary")
+                with gr.Row():
+                    hires_blend_folder = gr.Textbox(
+                        label="Hi-Res Blend Folder",
+                        value=self.app_config.get("hires_blend_folder", "./output_splatted/hires"),
+                        info="Path to hi-res splatted videos for final blending (optional)."
+                    )
+                with gr.Row():
+                    output_folder = gr.Textbox(
+                        label="Output Folder",
+                        value=self.app_config.get("output_folder", "./output_inpainted"),
+                        info="Choose the directory where the processed (inpainted) videos will be saved. Output will be Side-by-Side (original | inpainted) for quad inputs, or only the inpainted right eye for dual inputs."
+                    )
+                with gr.Row():
+                    input_res_display = gr.Textbox(label="Detected Input Resolution", value="Not read yet", interactive=False)
             
             # Parameters Section
             with gr.Group():
@@ -729,12 +793,12 @@ class InpaintingWebUI:
                     mask_dilate_kernel_size = gr.Slider(
                         minimum=0, maximum=50, value=float(self.app_config.get("mask_dilate_kernel_size", 5.0)),
                         step=0.5, label="Mask Dilate Kernel",
-                        info="Sets the size of the shape used to expand white areas in a mask, making objects larger and filling small gaps during dilation (e.g., 7, 15). Set to 0 to disable."
+                        info="Sets the size of the shape used to expand white areas in a mask, making objects larger and filling small gaps during dilation (e.g., 7, 15). Set to 0 to disable. This default value is based on the current input resolution."
                     )
                     mask_blur_kernel_size = gr.Slider(
                         minimum=0, maximum=50, value=float(self.app_config.get("mask_blur_kernel_size", 10.0)),
                         step=0.5, label="Mask Blur Kernel",
-                        info="Kernel size for Gaussian blur (e.g., 15, 25). Sigma is derived automatically. Set to 0 to disable."
+                        info="Kernel size for Gaussian blur (e.g., 15, 25). Sigma is derived automatically. Set to 0 to disable. This default value is based on the current input resolution."
                     )
             
             # Post-Processing Section
@@ -803,6 +867,13 @@ class InpaintingWebUI:
                 fn=toggle_mask_sliders,
                 inputs=[enable_post_inpainting_blend],
                 outputs=[mask_initial_threshold, mask_morph_kernel_size, mask_dilate_kernel_size, mask_blur_kernel_size]
+            )
+            
+            # Read input resolution and auto-adjust mask kernels
+            read_res_button.click(
+                fn=self.read_input_resolution,
+                inputs=[input_folder],
+                outputs=[status_label, mask_dilate_kernel_size, mask_blur_kernel_size, input_res_display]
             )
             
             # Collect all parameters
@@ -1419,21 +1490,33 @@ class InpaintingWebUI:
             self.progress_queue.put(("progress", 92))  # 92% at start of encoding
             
             try:
+                # Move final output to CPU first to free GPU memory before the encoding loop.
+                # Without this, a 4K tensor (e.g. 165 frames ~ 8 GB float16) stays on GPU
+                # while the CPU frames list simultaneously grows, causing OOM on smaller cards.
+                final_output_cpu = final_output.cpu()
+                del final_output
+                torch.cuda.empty_cache()
+                gc.collect()
+                
                 # Encode directly using FFmpeg with NVENC (much faster than PNG intermediate)
                 # Prepare frames for encoding
                 frames_to_encode = []
-                total_frames_to_encode = len(final_output)
-                for idx, frame in enumerate(final_output):
+                total_frames_to_encode = len(final_output_cpu)
+                for idx, frame in enumerate(final_output_cpu):
                     if self.stop_event.is_set():
                         return False, None
                     # Convert from [C,H,W] float32 [0,1] to uint8 [0,255]
-                    frame_np = (frame.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
+                    frame_np = (frame.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
                     frames_to_encode.append(frame_np)
                     
                     # Update progress during encoding (every 10 frames)
                     if (idx + 1) % 10 == 0:
                         enc_progress = 92 + int((idx + 1) / total_frames_to_encode * 8)
                         self.progress_queue.put(("progress", min(99, enc_progress)))
+                
+                # Free CPU tensor once frames are collected (helps lower-RAM systems)
+                del final_output_cpu
+                gc.collect()
                 
                 # Use NVENC encoding (GPU accelerated)
                 original_cuda_flag = sc_util.CUDA_AVAILABLE
@@ -1443,7 +1526,7 @@ class InpaintingWebUI:
                         temp_png_dir=None,  # Skip PNG saving
                         final_output_mp4_path=output_video_path,
                         fps=fps,
-                        total_output_frames=len(final_output),
+                        total_output_frames=total_frames_to_encode,
                         video_stream_info=video_stream_info,
                         user_output_crf=current_crf,
                         output_sidecar_ext=".spsidecar",
@@ -1571,6 +1654,31 @@ class InpaintingWebUI:
             # The GUI normalizes this crop here. We must do the same to ensure valid float 0-1 for SBS output.
             if left_frames is not None:
                 left_frames = left_frames.float() / 255.0
+            
+            # --- Resolution-Based Auto-Scaling for Mask Kernel Sizes ---
+            # Reference: 640px inpainting width produces the original defaults (dilate=5, blur=10).
+            # Scale proportionally so masks cover the same relative seam width at any resolution.
+            REFERENCE_WIDTH_FOR_DEFAULTS = 640
+            DEFAULT_DILATE_AT_REF = 5
+            DEFAULT_BLUR_AT_REF = 10
+            inpainting_area_width = mask_frames.shape[3]
+            scale_factor = inpainting_area_width / REFERENCE_WIDTH_FOR_DEFAULTS
+            scaled_dilate = int(round(DEFAULT_DILATE_AT_REF * scale_factor))
+            scaled_blur = int(round(DEFAULT_BLUR_AT_REF * scale_factor))
+            if scale_factor > 1.05:
+                logger.warning(f"[WEBUI] Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
+                               f"(scale={scale_factor:.2f}): dilate {mask_params['mask_dilate_kernel_size']} -> {scaled_dilate}, "
+                               f"blur {mask_params['mask_blur_kernel_size']} -> {scaled_blur}. This default value is based on the current input resolution.")
+                mask_params = {**mask_params, 'mask_dilate_kernel_size': scaled_dilate, 'mask_blur_kernel_size': scaled_blur}
+            elif scale_factor < 0.95:
+                logger.warning(f"[WEBUI] Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
+                               f"(scale={scale_factor:.2f}): dilate {mask_params['mask_dilate_kernel_size']} -> {scaled_dilate}, "
+                               f"blur {mask_params['mask_blur_kernel_size']} -> {scaled_blur}. This default value is based on the current input resolution.")
+                mask_params = {**mask_params, 'mask_dilate_kernel_size': scaled_dilate, 'mask_blur_kernel_size': scaled_blur}
+            else:
+                logger.info(f"[WEBUI] Keeping stored mask kernel values (inpainting width {inpainting_area_width}px is within 5% of reference). "
+                            f"This default value is based on the current input resolution.")
+            # --- End Auto-Scaling ---
             
             # Mask Processing (Binarize, Dilate, Blur)
             # Convert to grayscale using OpenCV (matches GUI method exactly)

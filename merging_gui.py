@@ -104,6 +104,7 @@ def apply_shadow_blur(mask: torch.Tensor, shift_per_step: int, start_opacity: fl
 
 class MergingGUI(ThemedTk):
     # --- Centralized Default Settings ---
+    # Reference for masking defaults: 640px reference width.
     APP_DEFAULTS = {
         "inpainted_folder": "./output_inpainted",
         "original_folder": "./input_source_clips",
@@ -503,6 +504,13 @@ class MergingGUI(ThemedTk):
         btn_mask.grid(row=2, column=2, padx=5)
         self.widgets_to_disable.append(entry_mask)
         self.widgets_to_disable.append(btn_mask)
+        
+        btn_autoscale = ttk.Button(
+            folder_frame, text="Auto-Scale Kernels",
+            command=lambda: self._auto_scale_mask_kernels_from_video(self.mask_folder_var.get())
+        )
+        btn_autoscale.grid(row=2, column=3, padx=5)
+        self.widgets_to_disable.append(btn_autoscale)
 
         # Output Folder
         ttk.Label(folder_frame, text="Output Folder:").grid(row=3, column=0, sticky="e", padx=5, pady=2)
@@ -650,6 +658,50 @@ class MergingGUI(ThemedTk):
         folder = filedialog.askdirectory(initialdir=var.get())
         if folder:
             var.set(folder)
+
+    def _auto_scale_mask_kernels_from_video(self, mask_folder):
+        """Find the first splatted video in the mask folder and auto-scale dilate/blur defaults."""
+        try:
+            if not os.path.isdir(mask_folder):
+                self.update_status_label("Mask folder not found")
+                return
+
+            videos = sorted(glob.glob(os.path.join(mask_folder, "*.mp4")))
+            splatted = [
+                v for v in videos
+                if "_splatted2" in os.path.basename(v) or "_splatted4" in os.path.basename(v)
+            ]
+            if not splatted:
+                self.update_status_label("No splatted videos found")
+                return
+
+            first = splatted[0]
+            cap = cv2.VideoCapture(first)
+            if not cap.isOpened():
+                self.update_status_label(f"Failed to read: {os.path.basename(first)}")
+                return
+            orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            cap.release()
+
+            REFERENCE_WIDTH_FOR_DEFAULTS = 640
+            DEFAULT_DILATE_AT_REF = 3
+            DEFAULT_BLUR_AT_REF = 5
+            scale_factor = orig_w / REFERENCE_WIDTH_FOR_DEFAULTS
+            scaled_dilate = max(1, int(round(DEFAULT_DILATE_AT_REF * scale_factor)))
+            scaled_blur = max(3, int(round(DEFAULT_BLUR_AT_REF * scale_factor)))
+
+            self.mask_dilate_kernel_size_var.set(float(scaled_dilate))
+            self.mask_blur_kernel_size_var.set(float(scaled_blur))
+            for updater in self.slider_label_updaters:
+                updater()
+
+            self.update_status_label(
+                f"Auto-scaled for {orig_w}px (scale={scale_factor:.2f}): "
+                f"Dilate={scaled_dilate}, Blur={scaled_blur}"
+            )
+        except Exception as e:
+            logger.error(f"Auto-scale failed: {e}", exc_info=True)
+            self.update_status_label("Auto-scale failed")
 
     def _find_video_by_core_name(self, folder: str, core_name: str) -> Optional[str]:
         """Scans a folder for a file matching the core_name with any common video extension."""

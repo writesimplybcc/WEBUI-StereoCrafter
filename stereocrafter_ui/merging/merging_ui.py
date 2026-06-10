@@ -159,6 +159,60 @@ class MergingWebUI:
         self._last_video_path = None
         self._last_frame_index = None
 
+    def read_input_resolution(self, mask_folder):
+        """Scan the mask folder, read the first splatted video, and auto-adjust mask kernel defaults."""
+        try:
+            if not os.path.isdir(mask_folder):
+                return (
+                    gr.update(value="❌ Mask folder does not exist"),
+                    gr.update(),
+                    gr.update(),
+                )
+
+            videos = sorted(glob.glob(os.path.join(mask_folder, "**", "*.mp4"), recursive=True))
+            splatted = [v for v in videos if "_splatted2" in os.path.basename(v) or "_splatted4" in os.path.basename(v)]
+            if not splatted:
+                return (
+                    gr.update(value="⚠️ No splatted videos found"),
+                    gr.update(),
+                    gr.update(),
+                )
+
+            first = splatted[0]
+            cap = cv2.VideoCapture(first)
+            if not cap.isOpened():
+                return (
+                    gr.update(value=f"❌ Failed to open: {os.path.basename(first)}"),
+                    gr.update(),
+                    gr.update(),
+                )
+
+            orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            cap.release()
+
+            REFERENCE_WIDTH_FOR_DEFAULTS = 640
+            DEFAULT_DILATE_AT_REF = 3
+            DEFAULT_BLUR_AT_REF = 5
+            scale_factor = orig_w / REFERENCE_WIDTH_FOR_DEFAULTS
+            scaled_dilate = max(1, int(round(DEFAULT_DILATE_AT_REF * scale_factor)))
+            scaled_blur = max(3, int(round(DEFAULT_BLUR_AT_REF * scale_factor)))
+
+            res_str = f"{orig_w}px wide (scale={scale_factor:.2f})"
+            status_msg = f"✓ {os.path.basename(first)}: {orig_w}px → Dilate={scaled_dilate}, Blur={scaled_blur}"
+
+            return (
+                gr.update(value=status_msg),
+                gr.update(value=float(scaled_dilate)),
+                gr.update(value=float(scaled_blur)),
+            )
+        except Exception as e:
+            logger.error(f"Read resolution failed: {e}", exc_info=True)
+            return (
+                gr.update(value=f"❌ Error: {e}"),
+                gr.update(),
+                gr.update(),
+            )
+
     def _scan_for_preview_videos(self, inpainted_folder):
         """Scans folders to find valid videos for preview."""
         # For merging preview, we should look at SPLATTED files (which have masks)
@@ -470,17 +524,20 @@ class MergingWebUI:
                         value=self.original_folder,
                         scale=2
                     )
-                with gr.Row():
-                    mask_folder_input = gr.Textbox(
-                        label="Mask Folder",
-                        value=self.mask_folder,
-                        scale=2
-                    )
-                    output_folder_input = gr.Textbox(
-                        label="Output Folder",
-                        value=self.output_folder,
-                        scale=2
-                    )
+            with gr.Row():
+                mask_folder_input = gr.Textbox(
+                    label="Mask Folder",
+                    value=self.mask_folder,
+                    scale=2
+                )
+                output_folder_input = gr.Textbox(
+                    label="Output Folder",
+                    value=self.output_folder,
+                    scale=2
+                )
+                read_res_button = gr.Button("Auto-Scale Kernels", variant="secondary", scale=1)
+            with gr.Row():
+                resolution_display = gr.Textbox(label="Detected Resolution", value="Not read yet", interactive=False)
             
             # Main layout: Side-by-side (Preview LEFT, Parameters RIGHT)
             with gr.Row():

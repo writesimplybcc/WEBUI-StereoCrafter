@@ -944,6 +944,32 @@ class InpaintingGUI(ThemedTk):
             return None
 
 
+        # --- Resolution-Based Auto-Scaling for Mask Kernel Sizes ---
+        # Reference: 640px inpainting width produces the original defaults (dilate=5, blur=10).
+        # Scale proportionally so masks cover the same relative seam width at any resolution.
+        REFERENCE_WIDTH_FOR_DEFAULTS = 640
+        DEFAULT_DILATE_AT_REF = 5
+        DEFAULT_BLUR_AT_REF = 10
+        inpainting_area_width = total_w_current // 2
+        scale_factor = inpainting_area_width / REFERENCE_WIDTH_FOR_DEFAULTS
+        scaled_dilate = int(round(DEFAULT_DILATE_AT_REF * scale_factor))
+        scaled_blur = int(round(DEFAULT_BLUR_AT_REF * scale_factor))
+        if scale_factor > 1.05:
+            logger.info(f"Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
+                        f"(scale={scale_factor:.2f}): dilate {self.mask_dilate_kernel_size_var.get()} -> {scaled_dilate}, "
+                        f"blur {self.mask_blur_kernel_size_var.get()} -> {scaled_blur}")
+            self.mask_dilate_kernel_size_var.set(str(scaled_dilate))
+            self.mask_blur_kernel_size_var.set(str(scaled_blur))
+        elif scale_factor < 0.95:
+            logger.info(f"Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
+                        f"(scale={scale_factor:.2f}): dilate {self.mask_dilate_kernel_size_var.get()} -> {scaled_dilate}, "
+                        f"blur {self.mask_blur_kernel_size_var.get()} -> {scaled_blur}")
+            self.mask_dilate_kernel_size_var.set(str(scaled_dilate))
+            self.mask_blur_kernel_size_var.set(str(scaled_blur))
+        else:
+            logger.debug(f"Keeping stored mask kernel values (inpainting width {inpainting_area_width}px is within 5% of reference).")
+        # --- End Auto-Scaling ---
+
         # --- Input Splitting based on Dual/Quad ---
         frames_left_original_cropped: Optional[torch.Tensor] = None # For SBS output, cropped to original length
 
