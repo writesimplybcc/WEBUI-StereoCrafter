@@ -525,46 +525,16 @@ class DepthCrafterDemo:
                 # Crop padding
                 tile_depth = tile_depth[:, :tile_h, :tile_w]
 
-                # --- ALIGNMENT LOGIC ---
-                # Align the new tile to the already-processed canvas using the overlapping region
-                if i > 0 or j > 0:
-                    current_weight_mask = weight_mask[y_start:y_end, x_start:x_end]
-                    # Only use pixels where the existing weight is significant
-                    overlap_mask = current_weight_mask > 1e-4
-                    if np.any(overlap_mask):
-                        current_depth_output = depth_output[:, y_start:y_end, x_start:x_end]
-                        ref_depth = current_depth_output / np.maximum(current_weight_mask, 1e-8)
-                        
-                        for f_idx in range(tile_depth.shape[0]):
-                            x_vals = tile_depth[f_idx][overlap_mask]
-                            y_vals = ref_depth[f_idx][overlap_mask]
-                            
-                            if len(x_vals) > 10:
-                                x_min, x_max = np.percentile(x_vals, 5), np.percentile(x_vals, 95)
-                                y_min, y_max = np.percentile(y_vals, 5), np.percentile(y_vals, 95)
-                                
-                                if x_max - x_min > 1e-5:
-                                    s_k = (y_max - y_min) / (x_max - x_min)
-                                    t_k = y_min - s_k * x_min
-                                else:
-                                    s_k = 1.0
-                                    t_k = np.median(y_vals) - np.median(x_vals)
-                                
-                                # Clip scale to prevent extreme distortions
-                                s_k = np.clip(s_k, 0.1, 10.0)
-                                tile_depth[f_idx] = tile_depth[f_idx] * s_k + t_k
-                # --- END ALIGNMENT LOGIC ---
-
                 # Create weight mask for blending
                 weight = np.ones((tile_h, tile_w), dtype=np.float32)
                 if i > 0:
-                    weight[:tile_overlap, :] *= np.linspace(0.0, 1.0, tile_overlap)[:, None]
+                    weight[:tile_overlap, :] *= np.linspace(0.5, 1, tile_overlap)[:, None]
                 if j > 0:
-                    weight[:, :tile_overlap] *= np.linspace(0.0, 1.0, tile_overlap)[None, :]
+                    weight[:, :tile_overlap] *= np.linspace(0.5, 1, tile_overlap)[None, :]
                 if i < num_tiles_h - 1:
-                    weight[-tile_overlap:, :] *= np.linspace(1.0, 0.0, tile_overlap)[:, None]
+                    weight[-tile_overlap:, :] *= np.linspace(1, 0.5, tile_overlap)[:, None]
                 if j < num_tiles_w - 1:
-                    weight[:, -tile_overlap:] *= np.linspace(1.0, 0.0, tile_overlap)[None, :]
+                    weight[:, -tile_overlap:] *= np.linspace(1, 0.5, tile_overlap)[None, :]
 
                 # Accumulate depth and weights
                 depth_output[:, y_start:y_end, x_start:x_end] += tile_depth * weight[None, :, :]

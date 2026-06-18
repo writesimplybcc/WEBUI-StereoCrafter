@@ -278,7 +278,9 @@ def _align_segments_data(all_loaded_segments_frames: list, segment_job_meta_map:
                         target_align_frames.reshape(-1), 
                         mask
                     )
-                    _logger.debug(f"Aligning segment {current_id} to {prev_id}. Method: shift_scale. Scale: {s:.4f}, Shift: {t:.4f}")
+                    s = np.clip(s, 0.92, 1.08)
+                    t = np.clip(t, -0.03, 0.03)
+                    _logger.debug(f"Aligning segment {current_id} to {prev_id}. Method: shift_scale. Scale: {s:.4f}, Shift: {t:.4f} (clamped)")
                     aligned_current = s * current_raw + t
                 elif merge_alignment_method.lower() == "linear_blend":
                     _logger.debug(f"  Linear Blend: No explicit S&S alignment for segment ID {current_id}. Blending will occur in stitching.")

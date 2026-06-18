@@ -221,7 +221,7 @@ class DepthCrafterWebUI(BaseWebUI):
         )
         # Resolution Preset Checkboxes
         self.resolution_preset = gr.Radio(
-            ["Custom", "720p (1280x720)", "1080p (1920x1080)", "4K (3840x2160)"],
+            ["Custom", "1024x576 (576p)", "720p (1280x720)", "1080p (1920x1080)"],
             value="Custom",
             label="Resolution Preset",
             info="Select a preset resolution or choose 'Custom' to use manual sliders below. Presets auto-set width/height to multiples of 64."
@@ -290,6 +290,7 @@ class DepthCrafterWebUI(BaseWebUI):
             interactive=False,
             info="Displays auto-suggested tiling parameters based on your GPU VRAM and system RAM."
         )
+        self.overwrite_existing_var = gr.Checkbox(label="Overwrite existing depth map file", value=False)
 
         # Auto-detect GPU for xformers and cudnn defaults
         try:
@@ -436,12 +437,12 @@ class DepthCrafterWebUI(BaseWebUI):
 
         # Event handlers for resolution presets
         def update_resolution(preset):
-            if preset == "720p (1280x720)":
+            if preset == "1024x576 (576p)":
+                return 1024, 576
+            elif preset == "720p (1280x720)":
                 return 1280, 720
             elif preset == "1080p (1920x1080)":
                 return 1920, 1080
-            elif preset == "4K (3840x2160)":
-                return 3840, 2160
             else:  # Custom
                 return gr.update(), gr.update()  # Keep current values
 
@@ -586,8 +587,8 @@ class DepthCrafterWebUI(BaseWebUI):
             # VRAM-based tiling suggestions
             try:
                 vram_info = get_current_vram_usage()
-                total_vram = vram_info.get('total_gb', 8)
-                free_vram = vram_info.get('free_gb', total_vram)
+                total_vram = vram_info.get('total', 8)
+                free_vram = vram_info.get('free', total_vram)
                 # Suggest tiling if resolution is high and VRAM low
                 if target_width > 1920 or target_height > 1080:
                     suggested_tile_size = 512 if total_vram < 16 else 1024
@@ -608,10 +609,17 @@ class DepthCrafterWebUI(BaseWebUI):
             # Dynamic max_res based on available VRAM
             try:
                 vram_info = get_current_vram_usage()
-                total_vram = vram_info.get('total_gb', 8)  # Default to 8GB if unavailable
-                free_vram = vram_info.get('free_gb', total_vram)
+                total_vram = vram_info.get('total', 8)  # Default to 8GB if unavailable
+                free_vram = vram_info.get('free', total_vram)
+                gpu_name = vram_info.get('gpu_name', '').lower()
                 free_percentage = free_vram / total_vram if total_vram > 0 else 0
-                effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.2
+                
+                # For RTX 3060 12GB: even with model loaded, we should handle 1024px
+                # Use generous multiplier for 12GB cards, or fall back to total VRAM if reasonably free
+                if total_vram >= 12 and free_vram >= 3:
+                    effective_vram = total_vram  # Trust total VRAM for 12GB+ cards with reasonable free space
+                else:
+                    effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.5  # Increased from 1.2 for safety
                 # Set max_res based on effective VRAM tiers
                 if effective_vram < 8:
                     max_res = 512

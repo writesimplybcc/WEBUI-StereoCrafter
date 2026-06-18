@@ -121,5 +121,6 @@
         }
       }
     }
-  }
+  },
+  "snapshot": false
 }

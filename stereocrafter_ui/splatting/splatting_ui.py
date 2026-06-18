@@ -327,7 +327,7 @@ class SplatterWebUI:
         "DEFAULT_CONFIG_FILENAME": "config_splat.splatcfg",
 
         # GUI/Processing Defaults (Used for reset/fallback)
-        "MAX_DISP": "30.0",
+        "MAX_DISP": "20.0",
         "CONV_POINT": "0.5",
         "PROC_LENGTH": "-1",
         "BATCH_SIZE_FULL": "10",
@@ -460,7 +460,7 @@ class SplatterWebUI:
         self.output_crf = int(self.app_config.get("output_crf", defaults["CRF_OUTPUT"]))
         self.output_crf_full = int(self.app_config.get("output_crf_full", defaults["CRF_OUTPUT"]))
         self.output_crf_low = int(self.app_config.get("output_crf_low", defaults["CRF_OUTPUT"]))
-        self.move_to_finished = True
+        self.move_to_finished = False
 
         self.auto_convergence_mode = "Off"
 
@@ -2003,10 +2003,10 @@ class SplatterWebUI:
             "input_bias": merged_config.get("input_bias"),
             "depth_gamma": merged_config.get("gamma", gui_config["gamma"]),
             # GUI-derived depth pre-processing settings
-            "depth_dilate_size_x": float(self.depth_dilate_size_x),
-            "depth_dilate_size_y": float(self.depth_dilate_size_y),
-            "depth_blur_size_x": int(float(self.depth_blur_size_x)),
-            "depth_blur_size_y": int(float(self.depth_blur_size_y)),
+            "depth_dilate_size_x": float(merged_config.get("depth_dilate_size_x", self.depth_dilate_size_x)) if isinstance(merged_config, dict) else float(self.depth_dilate_size_x),
+            "depth_dilate_size_y": float(merged_config.get("depth_dilate_size_y", self.depth_dilate_size_y)) if isinstance(merged_config, dict) else float(self.depth_dilate_size_y),
+            "depth_blur_size_x": int(float(merged_config.get("depth_blur_size_x", self.depth_blur_size_x))) if isinstance(merged_config, dict) else int(float(self.depth_blur_size_x)),
+            "depth_blur_size_y": int(float(merged_config.get("depth_blur_size_y", self.depth_blur_size_y))) if isinstance(merged_config, dict) else int(float(self.depth_blur_size_y)),
             # Tracking / info sources
             "sidecar_found": sidecar_exists,
             "anchor_source": "Sidecar" if sidecar_exists else "GUI/Default",
@@ -2020,8 +2020,27 @@ class SplatterWebUI:
         # If no sidecar file exists at all, enforce GUI values explicitly
         if not sidecar_exists:
             settings["convergence_plane"] = gui_config["convergence_plane"]
-            settings["max_disparity_percentage"] = gui_config["max_disparity"]
             settings["depth_gamma"] = gui_config["gamma"]
+            
+            # --- AUTO-SCALE PARAMETERS ---
+            try:
+                import cv2
+                cap = cv2.VideoCapture(video_path)
+                if cap.isOpened():
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    cap.release()
+                    auto_disp, auto_dilate, auto_blur = self._get_auto_scaled_params(width)
+                    settings["max_disparity_percentage"] = auto_disp
+                    settings["depth_dilate_size_x"] = auto_dilate
+                    settings["depth_dilate_size_y"] = auto_dilate
+                    settings["depth_blur_size_x"] = auto_blur
+                    settings["depth_blur_size_y"] = auto_blur
+                    logger.info(f"Auto-scaled processing defaults for {video_name} (W:{width}): Disp {auto_disp}, Dilate {auto_dilate}, Blur {auto_blur}")
+                else:
+                    settings["max_disparity_percentage"] = gui_config["max_disparity"]
+            except Exception as e:
+                logger.error(f"Failed to auto-scale processing params: {e}")
+                settings["max_disparity_percentage"] = gui_config["max_disparity"]
 
         return settings
 
@@ -3175,18 +3194,33 @@ class SplatterWebUI:
             logger.error(f"Video list refresh error: {e}")
             return gr.Dropdown(choices=[], value=None), f"❌ Error: {str(e)}"
     
-    def detect_video_frames(self, selected_video: str):
+    def _get_auto_scaled_params(self, width: int) -> tuple[float, float, int]:
+        """Returns auto-scaled (disparity, dilate_x, blur_x) based on video width."""
+        if width > 3000:
+            return 90.0, 22.0, 37
+        elif width >= 1900:
+            return 40.0, 10.0, 17
+        elif width >= 1200:
+            return 30.0, 9.0, 16
+        else:
+            return 20.0, 8.0, 15
+
+    def detect_video_frames(self, selected_video: str, current_disp: float = 20.0, current_dilate: float = 8.0, current_blur: float = 15.0):
         """
-        Detect total frames in the selected video and update the frame slider.
+        Detect total frames in the selected video, update the frame slider,
+        auto-save the sidecar of the previous video, and auto-scale UI settings.
         
         Args:
             selected_video: Filename of the selected video
+            current_disp: Current UI Disparity slider value
+            current_dilate: Current UI Dilate X slider value
+            current_blur: Current UI Blur X slider value
             
-        Returns: (updated_slider, status_message)
+        Returns: (updated_slider, status_message, disp_update, disp_main_update, dilate_x_update, dilate_y_update, blur_x_update, blur_y_update)
         """
         try:
             if not selected_video:
-                return gr.Slider(value=0, maximum=1000, step=1), "⚠️ No video selected"
+                return gr.Slider(value=0, maximum=1000, step=1), "⚠️ No video selected", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             
             # Find the full path of the selected video
             video_files = self._scan_video_files(self.input_source_clips)
@@ -3198,33 +3232,82 @@ class SplatterWebUI:
                     break
             
             if not video_path:
-                return gr.Slider(value=0, maximum=1000, step=1), f"⚠️ Video not found: {selected_video}"
+                return gr.Slider(value=0, maximum=1000, step=1), f"⚠️ Video not found: {selected_video}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             
+            # --- Auto-Save Previous Sidecar Logic ---
+            if getattr(self, 'last_previewed_video_path', None) and os.path.exists(self.last_previewed_video_path):
+                sidecar_ext = self.APP_CONFIG_DEFAULTS.get("SIDECAR_EXT", ".fssidecar")
+                video_name = os.path.splitext(os.path.basename(self.last_previewed_video_path))[0]
+                sidecar_folder = self._get_sidecar_base_folder()
+                sidecar_path = os.path.join(sidecar_folder, f"{video_name}_depth{sidecar_ext}")
+                
+                sidecar_data = self.sidecar_manager.load_sidecar_data(sidecar_path) if os.path.exists(sidecar_path) else {}
+                sidecar_data["max_disp"] = float(current_disp)
+                sidecar_data["depth_dilate_size_x"] = float(current_dilate)
+                sidecar_data["depth_dilate_size_y"] = float(current_dilate)
+                sidecar_data["depth_blur_size_x"] = float(current_blur)
+                sidecar_data["depth_blur_size_y"] = float(current_blur)
+                
+                self.sidecar_manager.save_sidecar_data(sidecar_path, sidecar_data)
+                logger.info(f"Auto-saved sidecar for {self.last_previewed_video_path} upon video switch.")
+            
+            self.last_previewed_video_path = video_path
+
             import cv2
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 cap.release()
                 logger.error(f"Failed to open video: {video_path}")
-                return gr.Slider(value=0, maximum=1000, step=1), f"❌ Failed to open: {selected_video}"
+                return gr.Slider(value=0, maximum=1000, step=1), f"❌ Failed to open: {selected_video}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             cap.release()
             
             if total_frames == 0:
-                return gr.Slider(value=0, maximum=1000, step=1), f"❌ Video has 0 frames: {selected_video}"
+                return gr.Slider(value=0, maximum=1000, step=1), f"❌ Video has 0 frames: {selected_video}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             
+            # --- Auto-Scale Parameters ---
+            new_video_name = os.path.splitext(os.path.basename(video_path))[0]
+            sidecar_ext = self.APP_CONFIG_DEFAULTS.get("SIDECAR_EXT", ".fssidecar")
+            sidecar_folder = self._get_sidecar_base_folder()
+            sidecar_path = os.path.join(sidecar_folder, f"{new_video_name}_depth{sidecar_ext}")
+            
+            auto_disp, auto_dilate, auto_blur = None, None, None
+            sidecar_data = self.sidecar_manager.load_sidecar_data(sidecar_path) if os.path.exists(sidecar_path) else None
+            
+            if sidecar_data:
+                auto_disp = sidecar_data.get("max_disp", None)
+                auto_dilate = sidecar_data.get("depth_dilate_size_x", None)
+                auto_blur = sidecar_data.get("depth_blur_size_x", None)
+            
+            if auto_disp is None or auto_dilate is None or auto_blur is None:
+                calc_disp, calc_dilate, calc_blur = self._get_auto_scaled_params(width)
+                auto_disp = auto_disp if auto_disp is not None else calc_disp
+                auto_dilate = auto_dilate if auto_dilate is not None else calc_dilate
+                auto_blur = auto_blur if auto_blur is not None else calc_blur
+                logger.info(f"Auto-calculated parameters based on width {width}: Disp {auto_disp}, Dilate {auto_dilate}, Blur {auto_blur}")
+
             status = f"✅ {selected_video}: {total_frames} frames @ {fps:.2f} fps"
             
             logger.info(f"Detected {total_frames} frames in {selected_video}")
-            # Return updated slider with correct maximum
-            return gr.Slider(value=0, maximum=total_frames - 1, step=1, label=f"Frame (0-{total_frames-1})"), status
+            return (
+                gr.Slider(value=0, maximum=total_frames - 1, step=1, label=f"Frame (0-{total_frames-1})"), 
+                status,
+                gr.Slider(value=float(auto_disp)),
+                gr.Slider(value=float(auto_disp)),
+                gr.Slider(value=float(auto_dilate)),
+                gr.Slider(value=float(auto_dilate)),
+                gr.Slider(value=int(auto_blur)),
+                gr.Slider(value=int(auto_blur))
+            )
             
         except Exception as e:
             logger.error(f"Frame detection error: {e}")
             import traceback
             traceback.print_exc()
-            return gr.Slider(value=0, maximum=1000, step=1), f"❌ Error: {str(e)}"
+            return gr.Slider(value=0, maximum=1000, step=1), f"❌ Error: {str(e)}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
     
     def run_preview_auto_converge(self, force_run=False):
         """
@@ -3423,6 +3506,21 @@ class SplatterWebUI:
             
             depth_normalized = depth_frame.astype(np.float32) / 255.0
             
+            # Apply Dilate & Blur (Requires 4D PyTorch Tensor)
+            dilate_x = float(getattr(self, 'depth_dilate_size_x', 3.0))
+            dilate_y = float(getattr(self, 'depth_dilate_size_y', 3.0))
+            blur_x = int(float(getattr(self, 'depth_blur_size_x', 5.0)))
+            blur_y = int(float(getattr(self, 'depth_blur_size_y', 5.0)))
+            
+            if dilate_x > 0 or dilate_y > 0 or blur_x > 0 or blur_y > 0:
+                import torch
+                depth_tensor_4d = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0)
+                if dilate_x > 0 or dilate_y > 0:
+                    depth_tensor_4d = custom_dilate(depth_tensor_4d, dilate_x, dilate_y)
+                if blur_x > 0 or blur_y > 0:
+                    depth_tensor_4d = custom_blur(depth_tensor_4d, blur_x, blur_y)
+                depth_normalized = depth_tensor_4d.squeeze(0).squeeze(0).cpu().numpy()
+            
             # Apply gamma
             if self.depth_gamma != 1.0:
                 depth_normalized = 1.0 - np.power(1.0 - depth_normalized, self.depth_gamma)
@@ -3571,6 +3669,21 @@ class SplatterWebUI:
                 depth_frame = cv2.resize(depth_frame, (w, h), interpolation=cv2.INTER_LINEAR)
             
             depth_normalized = depth_frame.astype(np.float32) / 255.0
+            
+            # Apply Dilate & Blur (Requires 4D PyTorch Tensor)
+            dilate_x = float(getattr(self, 'depth_dilate_size_x', 3.0))
+            dilate_y = float(getattr(self, 'depth_dilate_size_y', 3.0))
+            blur_x = int(float(getattr(self, 'depth_blur_size_x', 5.0)))
+            blur_y = int(float(getattr(self, 'depth_blur_size_y', 5.0)))
+            
+            if dilate_x > 0 or dilate_y > 0 or blur_x > 0 or blur_y > 0:
+                import torch
+                depth_tensor_4d = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0)
+                if dilate_x > 0 or dilate_y > 0:
+                    depth_tensor_4d = custom_dilate(depth_tensor_4d, dilate_x, dilate_y)
+                if blur_x > 0 or blur_y > 0:
+                    depth_tensor_4d = custom_blur(depth_tensor_4d, blur_x, blur_y)
+                depth_normalized = depth_tensor_4d.squeeze(0).squeeze(0).cpu().numpy()
             
             # Apply gamma
             if self.depth_gamma != 1.0:
@@ -3721,6 +3834,21 @@ class SplatterWebUI:
                 depth_frame = cv2.resize(depth_frame, (w, h), interpolation=cv2.INTER_LINEAR)
             
             depth_normalized = depth_frame.astype(np.float32) / 255.0
+            
+            # Apply Dilate & Blur (Requires 4D PyTorch Tensor)
+            dilate_x = float(getattr(self, 'depth_dilate_size_x', 3.0))
+            dilate_y = float(getattr(self, 'depth_dilate_size_y', 3.0))
+            blur_x = int(float(getattr(self, 'depth_blur_size_x', 5.0)))
+            blur_y = int(float(getattr(self, 'depth_blur_size_y', 5.0)))
+            
+            if dilate_x > 0 or dilate_y > 0 or blur_x > 0 or blur_y > 0:
+                import torch
+                depth_tensor_4d = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0)
+                if dilate_x > 0 or dilate_y > 0:
+                    depth_tensor_4d = custom_dilate(depth_tensor_4d, dilate_x, dilate_y)
+                if blur_x > 0 or blur_y > 0:
+                    depth_tensor_4d = custom_blur(depth_tensor_4d, blur_x, blur_y)
+                depth_normalized = depth_tensor_4d.squeeze(0).squeeze(0).cpu().numpy()
             
             # Apply gamma
             if self.depth_gamma != 1.0:
@@ -4760,8 +4888,22 @@ class SplatterWebUI:
             # Auto-detect frames and update slider when video is selected
             self.preview_video_selector.change(
                 fn=self.detect_video_frames,
-                inputs=[self.preview_video_selector],
-                outputs=[self.preview_frame_number, self.status_label]
+                inputs=[
+                    self.preview_video_selector, 
+                    self.max_disp_comp, 
+                    self.depth_dilate_size_x_comp, 
+                    self.depth_blur_size_x_comp
+                ],
+                outputs=[
+                    self.preview_frame_number, 
+                    self.status_label, 
+                    self.preview_disparity_slider, 
+                    self.max_disp_comp, 
+                    self.depth_dilate_size_x_comp, 
+                    self.depth_dilate_size_y_comp,
+                    self.depth_blur_size_x_comp,
+                    self.depth_blur_size_y_comp
+                ]
             )
             
             # Auto-refresh preview when frame slider is released
