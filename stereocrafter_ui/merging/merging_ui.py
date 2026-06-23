@@ -22,6 +22,7 @@ from core.common.cli_utils import draw_progress_bar
 from core.common.gpu_utils import release_cuda_memory, CUDA_AVAILABLE
 from core.common.video_io import get_video_stream_info, encode_frames_to_mp4, start_ffmpeg_pipe_process
 from core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph
+from dependency.stereocrafter_util import get_gpu_memory_info
 import logging
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,11 @@ class MergingWebUI:
         self.shadow_min_opacity = 0.14
 
         # Options
-        self.use_gpu = False
+        try:
+            gpu_info = get_gpu_memory_info()
+            self.use_gpu = gpu_info.get('dedicated_gb', 0) >= 12
+        except Exception:
+            self.use_gpu = False
         self.output_format = "Full SBS (Left-Right)"
         self.pad_to_16_9 = False
         self.enable_color_transfer = True

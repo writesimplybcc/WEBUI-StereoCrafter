@@ -14,6 +14,7 @@ COPY webui.py .
 COPY requirements-docker.txt .
 COPY WEBUI_StereoCrafter_GPU_Presets_Guide.md .
 # Startup scripts
+COPY start-with-filebrowser.sh .
 COPY runpod-docker-startup.sh .
 
 # Your WEBUI folders
@@ -44,7 +45,13 @@ RUN sed -i 's/\r//' /workspace/start-with-filebrowser.sh \
     chmod +x /workspace/start-with-filebrowser.sh \
              /workspace/WEBUI-StereoCrafter/runpod-docker-startup.sh
 
+# Copy entrypoint script for RSA key injection
+COPY entrypoint.sh /workspace/entrypoint.sh
+RUN chmod +x /workspace/entrypoint.sh
+
 # Expose ports
 EXPOSE 7860 8080
 
+# Use entrypoint to inject RSA key, then run the startup script
+ENTRYPOINT ["/workspace/entrypoint.sh"]
 CMD ["/workspace/start-with-filebrowser.sh"]

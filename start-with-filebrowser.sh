@@ -5,6 +5,13 @@ echo "=== Starting WEBUI-StereoCrafter with FileBrowser ==="
 
 DB_FILE="/workspace/.filebrowser/filebrowser.db"
 
+# Source .env file if it exists (for RSA key and other vars)
+if [ -f "/workspace/WEBUI-StereoCrafter/.env" ]; then
+    echo "Loading environment from .env..."
+    # Export all variables from .env
+    export $(grep -v '^#' /workspace/WEBUI-StereoCrafter/.env | xargs)
+fi
+
 # Initialize FileBrowser if not already done
 if [ ! -f "$DB_FILE" ]; then
     echo "Initializing FileBrowser..."

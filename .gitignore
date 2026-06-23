@@ -144,3 +144,12 @@ scripts/Davinci Resolve/Edit/Add Markers.md
 scripts/Davinci Resolve/Edit/Add Markers.py
 scripts/Davinci Resolve/Edit/Export_Markers_To_SRT.md
 source_video/Incept_V2-0080.mp4
+
+# Folders
+input_source_clips/
+output_depthmaps/
+output_splatted/
+output_inpainted/
+final_videos/
+
+

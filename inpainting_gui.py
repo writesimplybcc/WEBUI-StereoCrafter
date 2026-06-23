@@ -1651,15 +1651,32 @@ class InpaintingGUI(ThemedTk):
             logger.info(f"Starting inference for chunk {i}-{i+input_frames_to_pipeline.shape[0]} (Temporal length: {input_frames_to_pipeline.shape[0]})...")
             start_time = time.time()
 
-            # Adaptive decode_chunk_size based on resolution
-            # At 4K (2160p), use 1. At 1080p, use 2. At 720p, use 4.
+            # Adaptive decode_chunk_size based on VRAM and resolution
+            from dependency.stereocrafter_util import get_current_vram_usage
+            try:
+                vram_info = get_current_vram_usage()
+                total_vram = vram_info.get('total', 8)
+            except Exception:
+                total_vram = 8
+            if total_vram <= 8:
+                chunk_by_vram = 2
+            elif total_vram <= 12:
+                chunk_by_vram = 3
+            elif total_vram <= 16:
+                chunk_by_vram = 4
+            elif total_vram <= 24:
+                chunk_by_vram = 6
+            elif total_vram <= 48:
+                chunk_by_vram = 10
+            else:
+                chunk_by_vram = 14
             frame_h = input_frames_to_pipeline.shape[2]
             if frame_h >= 2000:  # 4K or higher
-                adaptive_decode_chunk_size = 1
+                adaptive_decode_chunk_size = max(1, chunk_by_vram // 4)
             elif frame_h >= 1000:  # 1080p range
-                adaptive_decode_chunk_size = 2
+                adaptive_decode_chunk_size = max(2, chunk_by_vram // 2)
             else:  # 720p or lower
-                adaptive_decode_chunk_size = 4
+                adaptive_decode_chunk_size = chunk_by_vram
 
             logger.info(f"Using adaptive decode_chunk_size={adaptive_decode_chunk_size} for resolution {input_frames_to_pipeline.shape[2]}x{input_frames_to_pipeline.shape[3]}")
 

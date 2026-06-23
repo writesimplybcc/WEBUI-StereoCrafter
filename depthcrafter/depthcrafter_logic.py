@@ -56,7 +56,7 @@ from typing import Optional, Tuple, List, Dict, Union
 # --- Global Configuration Flags ---
 
 
-_ENABLE_XFORMERS_ATTENTION = True # Set to True or False to enable/disable xFormers.
+_ENABLE_XFORMERS_ATTENTION = False # Disabled by default for CPU offload stability in Docker. Override at your own risk.
 
 class DepthCrafterDemo:
     def __init__(
@@ -85,10 +85,7 @@ class DepthCrafterDemo:
                 local_files_only=local_files_only,
                 token=token
             )
-            # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
-            
             cpu_offload_lower = cpu_offload
-
             if cpu_offload_lower == "sequential":
                 self.pipe.enable_sequential_cpu_offload()
                 _logger.info("CPU Offload set to 'sequential'.")
@@ -96,68 +93,51 @@ class DepthCrafterDemo:
                 self.pipe.enable_model_cpu_offload()
                 _logger.info("CPU Offload set to 'model'.")
             else:
-                # If the value is "none", "None", or any other unrecognized string/value
-                # (or the legacy string "None"), we default to full CUDA.
+                cpu_offload_lower = 'none'
                 self.pipe.to("cuda")
-                _logger.info(f"CPU Offload set to '{cpu_offload}' (unrecognized/None option). Model loaded entirely on CUDA.")
-
-                
-            # Decide if xFormers should be enabled:
-            # It's only enabled if the global flag is True AND the GUI flag (disable_xformers) is False.
-            should_enable_xformers = _ENABLE_XFORMERS_ATTENTION and not disable_xformers
+                _logger.info(f"CPU Offload set to '{cpu_offload_lower}'. Model loaded entirely on CUDA.")
             
+            try:
+                self.pipe.disable_attention_slicing()
+                _logger.info("Attention slicing DISABLED.")
+            except Exception as e:
+                _logger.warning(f"Could not disable attention slicing: {e}")
+            should_enable_xformers = _ENABLE_XFORMERS_ATTENTION and not disable_xformers
             if should_enable_xformers:
                 try:
                     from diffusers.utils.logging import set_verbosity_info
-                    set_verbosity_info() 
-
+                    set_verbosity_info()
                     self.pipe.enable_xformers_memory_efficient_attention()
-                    _logger.info("xFormers memory-efficient attention ENABLED (Globally ON, GUI OFF).")
+                    _logger.info("xFormers memory-efficient attention ENABLED.")
                 except ImportError:
                     _logger.warning("xFormers library not found, cannot enable.")
                 except Exception as e:
                     _logger.warning(f"Failed to enable xFormers: {e}. Falling back to standard attention.")
-                finally:
-                    pass 
             else:
-                # Even if the global flag was True, if disable_xformers is True, we explicitly disable it
                 if disable_xformers:
                     try:
-                        # Explicitly call disable_xformers_memory_efficient_attention to ensure standard kernels are used.
                         self.pipe.disable_xformers_memory_efficient_attention()
                         _logger.info("xFormers memory-efficient attention DISABLED by GUI setting (VRAM Save Mode).")
                     except Exception:
                         _logger.debug("Attempt to disable xformers failed, likely already disabled or not present.")
-                        pass
-                else: # This block handles the case where _ENABLE_XFORMERS_ATTENTION was False
+                else:
                     _logger.info("xFormers memory-efficient attention disabled by global setting.")
-
-            _logger.debug("DepthCrafterPipeline initialized successfully.") # This was already there, ensure it remains.
-
-            # Additional memory optimizations
+            
             try:
-                self.pipe.enable_attention_slicing("max")
-                _logger.info("Attention slicing enabled for memory efficiency.")
+                if cpu_offload_lower in ("model", "sequential") and hasattr(self.pipe.unet, 'disable_gradient_checkpointing'):
+                    self.pipe.unet.disable_gradient_checkpointing()
+                    _logger.info("Gradient checkpointing DISABLED for CPU offload stability.")
+                else:
+                    self.pipe.unet.enable_gradient_checkpointing()
+                    _logger.info("Gradient checkpointing enabled on UNet for memory efficiency.")
             except Exception as e:
-                _logger.warning(f"Could not enable attention slicing: {e}")
-
+                _logger.warning(f"Could not configure gradient checkpointing: {e}")
+            
             try:
                 self.pipe.enable_vae_slicing()
                 _logger.info("VAE slicing enabled for memory efficiency.")
             except Exception as e:
                 _logger.warning(f"Could not enable VAE slicing: {e}")
-
-            try:
-                self.pipe.enable_vae_tiling()
-                _logger.info("VAE tiling enabled for memory efficiency.")
-            except Exception as e:
-                _logger.warning(f"Could not enable VAE tiling: {e}")
-
-            try:
-                self.pipe.unet.enable_gradient_checkpointing()
-                _logger.info("Gradient checkpointing enabled on UNet for memory efficiency.")
-            except Exception as e:
-                _logger.warning(f"Could not enable gradient_checkpointing: {e}")
         except Exception as e:
             _logger.critical(f"CRITICAL: Failed to initialize DepthCrafterPipeline: {e}", exc_info=True)
             raise # Re-raise after logging
@@ -249,13 +229,14 @@ class DepthCrafterDemo:
             elif effective_vram < 24:
                 max_res = 1024
             elif effective_vram < 48:
-                max_res = 1024  # Conservative for 24-48GB
+                max_res = 1920
             elif effective_vram < 96:
-                max_res = 2048  # Higher for 48-96GB GPUs like RTX 6000 Ada/Pro
+                max_res = 2048
             else:
                 max_res = 4096  # Very high for 96GB+ GPUs
         except Exception as e:
             _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
+            effective_vram = 8.0
             max_res = 1024
         if user_target_height > max_res:
             _logger.warning(f"Target height {user_target_height} > {max_res}, reducing to {max_res} to prevent OOM")
@@ -421,10 +402,18 @@ class DepthCrafterDemo:
             max_window_for_segments = 16  # Adjust based on memory constraints
             current_pipe_window_for_call = min(actual_frames_to_process.shape[0], max_window_for_segments)
             current_pipe_overlap_for_call = max(0, current_pipe_window_for_call // 4)  # Small overlap for continuity
-        # For high resolution, reduce window size to prevent OOM
+        # For high resolution, reduce window size to prevent OOM based on available VRAM
         if actual_processed_height > 1000 or actual_processed_width > 1000:
-            current_pipe_window_for_call = min(current_pipe_window_for_call, 16)
-            current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, 4)
+            if effective_vram >= 48:
+                max_win, max_ovlp = 120, 8
+            elif effective_vram >= 24:
+                max_win, max_ovlp = 120, 6
+            elif effective_vram >= 16:
+                max_win, max_ovlp = 64, 5
+            else:
+                max_win, max_ovlp = 16, 4
+            current_pipe_window_for_call = min(current_pipe_window_for_call, max_win)
+            current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, max_ovlp)
 
         _logger.debug(f"Starting inference: Frames: {actual_frames_to_process.shape[0]}, Res: {actual_frames_to_process.shape[1]}x{actual_frames_to_process.shape[2]}, Scale: {guidance_scale}, Steps: {num_denoising_steps}, Win: {current_pipe_window_for_call}, Ovlp: {current_pipe_overlap_for_call}, Tiling: {enable_tiling}")
 
@@ -434,10 +423,40 @@ class DepthCrafterDemo:
                                                 current_pipe_window_for_call, current_pipe_overlap_for_call,
                                                 actual_processed_height, actual_processed_width, tile_size, tile_overlap)
         else:
+            _clear_device = False
             torch.cuda.empty_cache()
             with torch.inference_mode():
-                res = self.pipe(
-                    actual_frames_to_process,
+                # Determine safe decode_chunk_size based on VRAM to prevent VAE OOM
+                try:
+                    from dependency.stereocrafter_util import get_current_vram_usage
+                    vram_info = get_current_vram_usage()
+                    total_vram = vram_info.get('total', 8)
+                    if total_vram <= 8:
+                        safe_chunk_size = 1
+                    elif total_vram <= 12:
+                        safe_chunk_size = 2
+                    elif total_vram <= 16:
+                        safe_chunk_size = 3
+                    elif total_vram <= 24:
+                        safe_chunk_size = 6
+                    elif total_vram <= 48:
+                        safe_chunk_size = 10
+                    else:
+                        safe_chunk_size = 14
+                except Exception:
+                    if effective_vram >= 48:
+                        safe_chunk_size = 14
+                    elif effective_vram >= 24:
+                        safe_chunk_size = 10
+                    elif effective_vram >= 16:
+                        safe_chunk_size = 6
+                    elif effective_vram >= 12:
+                        safe_chunk_size = 3
+                    else:
+                        safe_chunk_size = 2
+
+                pipe_kwargs = dict(
+                    video=actual_frames_to_process,
                     height=actual_processed_height,
                     width=actual_processed_width,
                     output_type="np",
@@ -445,16 +464,63 @@ class DepthCrafterDemo:
                     num_inference_steps=num_denoising_steps,
                     window_size=current_pipe_window_for_call,
                     overlap=current_pipe_overlap_for_call,
-                ).frames[0]
-        _logger.debug(f"Inference completed. Result shape: {res.shape}")
+                    decode_chunk_size=safe_chunk_size,
+                )
 
-        # Clear GPU memory to prevent OOM in subsequent operations
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
+                def _run_pipe():
+                    try:
+                        if _clear_device:
+                            try:
+                                torch.cuda.synchronize()
+                                torch.cuda.empty_cache()
+                            except Exception:
+                                pass
+                        return self.pipe(**pipe_kwargs).frames[0]
+                    except (RuntimeError, OSError) as e:
+                        msg = str(e).lower()
+                        if 'device not ready' in msg or 'cuda device error' in msg or 'cuda error:' in msg:
+                            raise
+                        raise
 
-        if res.ndim == 4 and res.shape[-1] > 1: 
+                try:
+                    res = _run_pipe()
+                except Exception as e:
+                    msg = str(e).lower()
+                    if any(m in msg for m in ['device not ready', 'cuda device error', 'cuda error:']):
+                        _logger.warning("CUDA device not ready error during inference, retrying after reset: %s", e)
+                        try:
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                            torch.cuda.reset_peak_memory_stats()
+                            gc.collect()
+                            import time as _time
+                            _time.sleep(1.5)
+                            _clear_device = True
+                            res = _run_pipe()
+                        except Exception as e2:
+                            _logger.exception("Retry failed after CUDA driver error; attempting device reset")
+                            try:
+                                torch.cuda.synchronize()
+                                torch.cuda.empty_cache()
+                                import time as _time
+                                _time.sleep(2.0)
+                                torch.cuda.reset_peak_memory_stats()
+                                gc.collect()
+                                _clear_device = True
+                                res = _run_pipe()
+                            except Exception as e3:
+                                _logger.exception("Inference failed after multiple CUDA retries")
+                                raise RuntimeError("CUDA device not ready during inference") from e2
+                    else:
+                        raise
+        inference_result = res
+        _logger.debug(f"Inference completed. Result shape: {inference_result.shape}")
+
+        torch.cuda.synchronize()
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        if inference_result is not None and inference_result.ndim >= 3: 
             res = res.sum(-1) / res.shape[-1]
             _logger.debug(f"Inference result (RGB/RGBA) averaged to grayscale. Final shape: {res.shape}")
         return res

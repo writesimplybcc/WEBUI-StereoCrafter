@@ -42,7 +42,8 @@ from dependency.stereocrafter_util import (
     check_cuda_availability, release_cuda_memory, CUDA_AVAILABLE, set_util_logger_level,
     start_ffmpeg_pipe_process, custom_blur, custom_dilate,
     create_single_slider_with_label_updater, create_dual_slider_layout,
-    SidecarConfigManager, apply_dubois_anaglyph, apply_optimized_anaglyph
+    SidecarConfigManager, apply_dubois_anaglyph, apply_optimized_anaglyph,
+    get_vram_config, get_gpu_memory_info
 )
 try:
     from Forward_Warp import forward_warp
@@ -334,6 +335,10 @@ class SplatterWebUI:
         "BATCH_SIZE_LOW": "15",
         "CRF_OUTPUT": "23",
 
+        # VRAM-aware batch size defaults (overridden at runtime by get_vram_config)
+        "BATCH_FULL_HIGH_VRAM": "14",
+        "BATCH_LOW_HIGH_VRAM": "20",
+
         # Depth Processing Defaults
         "DEPTH_GAMMA": "1.0",
         "DEPTH_DILATE_SIZE_X": "3",
@@ -435,24 +440,41 @@ class SplatterWebUI:
         self.process_length = int(self.app_config.get("process_length", defaults["PROC_LENGTH"]))
         self.process_from = ""
         self.process_to = ""
-        self.batch_size = int(self.app_config.get("batch_size", defaults["BATCH_SIZE_FULL"]))
-        
+        try:
+            gpu_info = get_gpu_memory_info()
+            total_vram = gpu_info.get('dedicated_gb', 0)
+            self.use_gpu = total_vram >= 12
+        except Exception:
+            total_vram = 0
+            self.use_gpu = False
+        vram_cfg = get_vram_config()
+        try:
+            vram_tier = vram_cfg.get('_effective_vram_tier', total_vram)
+        except Exception:
+            vram_tier = total_vram
+        if vram_tier >= 48:
+            batch_full_default, batch_low_default = 20, 30
+        elif vram_tier >= 24:
+            batch_full_default, batch_low_default = 14, 20
+        elif vram_tier >= 12:
+            batch_full_default, batch_low_default = 10, 15
+        elif vram_tier >= 8:
+            batch_full_default, batch_low_default = 6, 10
+        else:
+            batch_full_default, batch_low_default = 4, 6
+        self.batch_size = int(self.app_config.get("batch_size", str(batch_full_default)))
+        self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", str(batch_low_default)))
+
         self.dual_output = False
-        self.enable_global_norm = False 
+        self.enable_global_norm = False
         self.enable_full_res = True
         self.enable_low_res = True
         # Initialize with default values, but these will be updated when a video is selected
         self.pre_res_width = int(self.app_config.get("pre_res_width", "640"))
 
         self.pre_res_height = int(self.app_config.get("pre_res_height", "360"))
-        self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", defaults["BATCH_SIZE_LOW"]))
 
         # Initialize with conservative defaults - will be auto-detected when video is selected
-        self.pre_res_width = int(self.app_config.get("pre_res_width", "640"))
-        self.pre_res_height = int(self.app_config.get("pre_res_height", "360"))
-        self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", defaults["BATCH_SIZE_LOW"]))
-        
-        # Initialize with default values but will be updated when video is selected
         self.current_video_width = 1280
         self.current_video_height = 720
         self._update_resolution_defaults_based_on_input = True
@@ -1537,6 +1559,11 @@ class SplatterWebUI:
             if self.processing_thread.is_alive():
                 logger.debug("==> Thread did not terminate gracefully within timeout.")
         release_cuda_memory()
+
+    def _clear_vram(self):
+        """Clears CUDA VRAM cache and releases memory."""
+        release_cuda_memory()
+        return "✅ VRAM cleared"
 
     def _fill_left_edge_occlusions(self, right_video_tensor: torch.Tensor, occlusion_mask_tensor: torch.Tensor, boundary_width_pixels: int = 3) -> torch.Tensor:
         """
@@ -3025,6 +3052,13 @@ class SplatterWebUI:
             # Yield error status to UI
             yield f"❌ Error: {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
         finally:
+            if torch.cuda.is_available():
+                try:
+                    allocated_gb = torch.cuda.memory_allocated(0) / (1024**3)
+                    total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    logger.info(f"[VRAM] Job end - Allocated: {allocated_gb:.1f}GB / {total_gb:.1f}GB total")
+                except Exception:
+                    pass
             release_cuda_memory()
             # Write final status
             try:
@@ -4064,6 +4098,15 @@ class SplatterWebUI:
         except (ValueError, TypeError) as e:
             return f"Error: Invalid input type - {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=False)
 
+        # Log VRAM state at job start
+        if torch.cuda.is_available():
+            try:
+                allocated_gb = torch.cuda.memory_allocated(0) / (1024**3)
+                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                logger.info(f"[VRAM] Job start - GPU: {torch.cuda.get_device_name(0)} | Allocated: {allocated_gb:.1f}GB / {total_gb:.1f}GB total")
+            except Exception:
+                pass
+
         # Update all the parameters from the UI inputs
         self.input_source_clips = input_source_clips
         self.input_depth_maps = input_depth_maps
@@ -4072,18 +4115,20 @@ class SplatterWebUI:
         self.process_length = process_length
         self.enable_full_res = enable_full_res
 
-        # Adjust batch_size based on VRAM and resolution for full-res processing
+        # Adjust batch_size based on VRAM and resolution for both full-res and low-res processing
         adjusted_batch_size = batch_size
-        if enable_full_res and torch.cuda.is_available():
+        adjusted_low_res_batch_size = low_res_batch_size
+        if (enable_full_res or enable_low_res) and torch.cuda.is_available():
             try:
                 total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                # Estimate VRAM needed: roughly 200MB per 1080p frame, scales with resolution
-                # For 4K (4x 1080p area), ~800MB per frame
                 estimated_vram_per_frame_mb = (pre_res_width * pre_res_height / (1920 * 1080)) * 200
-                safe_batch_size = max(1, int((total_vram_gb * 1024 * 0.7) / estimated_vram_per_frame_mb))  # 70% of VRAM
-                if batch_size > safe_batch_size:
+                safe_batch_size = max(1, int((total_vram_gb * 1024 * 0.7) / estimated_vram_per_frame_mb))
+                if enable_full_res and adjusted_batch_size > safe_batch_size:
                     logger.warning(f"Reducing batch_size from {batch_size} to {safe_batch_size} for {pre_res_width}x{pre_res_height} on {total_vram_gb:.1f}GB GPU")
                     adjusted_batch_size = safe_batch_size
+                if enable_low_res and adjusted_low_res_batch_size > safe_batch_size:
+                    logger.debug(f"Reducing low_res_batch_size from {low_res_batch_size} to {safe_batch_size} for VRAM safety")
+                    adjusted_low_res_batch_size = safe_batch_size
             except Exception as e:
                 logger.debug(f"Could not adjust batch_size based on VRAM: {e}")
 
@@ -4096,7 +4141,7 @@ class SplatterWebUI:
         self.enable_low_res = enable_low_res
         self.pre_res_width = pre_res_width
         self.pre_res_height = pre_res_height
-        self.low_res_batch_size = low_res_batch_size
+        self.low_res_batch_size = adjusted_low_res_batch_size
         self.dual_output = dual_output
         self.zero_disparity_anchor = zero_disparity_anchor
         self.enable_global_norm = enable_global_norm
@@ -4707,6 +4752,7 @@ class SplatterWebUI:
                     self.process_from_comp = gr.Number(label="From", value=0, precision=0, scale=1)
                     self.process_to_comp = gr.Number(label="To", value=0, precision=0, scale=1)
                     self.stop_button = gr.Button("STOP", variant="stop", interactive=False)
+                    self.clear_vram_button = gr.Button("🧹 Clear VRAM", variant="secondary")
                     self.preview_auto_converge_button = gr.Button("Preview Auto-Converge")
                     self.preview_format_comp = gr.Dropdown(
                         choices=["Side-by-Side", "Anaglyph (Red/Cyan)", "Depth Map"],
@@ -4870,6 +4916,12 @@ class SplatterWebUI:
                 fn=self.run_preview_auto_converge_with_mode,
                 inputs=[self.auto_convergence_comp, self.preview_format_comp],
                 outputs=[self.status_label, self.zero_disparity_anchor_comp, self.preview_image_output]
+            )
+
+            self.clear_vram_button.click(
+                fn=self._clear_vram,
+                inputs=[],
+                outputs=[self.status_label]
             )
             
             # Manual preview handlers
