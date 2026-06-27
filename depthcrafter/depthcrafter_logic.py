@@ -56,7 +56,7 @@ from typing import Optional, Tuple, List, Dict, Union
 # --- Global Configuration Flags ---
 
 
-_ENABLE_XFORMERS_ATTENTION = False # Disabled by default for CPU offload stability in Docker. Override at your own risk.
+_ENABLE_XFORMERS_ATTENTION = True # Enabled by default; GUI can override via disable_xformers checkbox. Disabled for low-VRAM Docker stability.
 
 class DepthCrafterDemo:
     def __init__(
@@ -134,10 +134,16 @@ class DepthCrafterDemo:
                 _logger.warning(f"Could not configure gradient checkpointing: {e}")
             
             try:
-                self.pipe.enable_vae_slicing()
-                _logger.info("VAE slicing enabled for memory efficiency.")
+                from dependency.stereocrafter_util import get_current_vram_usage
+                vram_info = get_current_vram_usage()
+                total_vram = vram_info.get('total', 8)
+                if total_vram < 24:
+                    self.pipe.enable_vae_slicing()
+                    _logger.info("VAE slicing enabled for memory efficiency.")
+                else:
+                    _logger.info("VAE slicing disabled (sufficient VRAM, smaller tensors fit without slicing).")
             except Exception as e:
-                _logger.warning(f"Could not enable VAE slicing: {e}")
+                _logger.warning(f"Could not determine VRAM for VAE slicing decision, disabling slicing: {e}")
         except Exception as e:
             _logger.critical(f"CRITICAL: Failed to initialize DepthCrafterPipeline: {e}", exc_info=True)
             raise # Re-raise after logging
@@ -228,12 +234,14 @@ class DepthCrafterDemo:
                 max_res = 768
             elif effective_vram < 24:
                 max_res = 1024
+            elif effective_vram < 32:
+                max_res = 1920
             elif effective_vram < 48:
                 max_res = 1920
-            elif effective_vram < 96:
+            elif effective_vram < 80:
                 max_res = 2048
             else:
-                max_res = 4096  # Very high for 96GB+ GPUs
+                max_res = 4096
         except Exception as e:
             _logger.warning(f"Could not determine VRAM for dynamic resolution cap, using default 1024: {e}")
             effective_vram = 8.0
@@ -404,12 +412,18 @@ class DepthCrafterDemo:
             current_pipe_overlap_for_call = max(0, current_pipe_window_for_call // 4)  # Small overlap for continuity
         # For high resolution, reduce window size to prevent OOM based on available VRAM
         if actual_processed_height > 1000 or actual_processed_width > 1000:
-            if effective_vram >= 48:
+            if effective_vram >= 80:
+                max_win, max_ovlp = 130, 10
+            elif effective_vram >= 48:
                 max_win, max_ovlp = 120, 8
+            elif effective_vram >= 32:
+                max_win, max_ovlp = 120, 6
             elif effective_vram >= 24:
                 max_win, max_ovlp = 120, 6
+            elif effective_vram >= 20:
+                max_win, max_ovlp = 48, 5
             elif effective_vram >= 16:
-                max_win, max_ovlp = 64, 5
+                max_win, max_ovlp = 32, 5
             else:
                 max_win, max_ovlp = 16, 4
             current_pipe_window_for_call = min(current_pipe_window_for_call, max_win)
@@ -439,18 +453,26 @@ class DepthCrafterDemo:
                         safe_chunk_size = 3
                     elif total_vram <= 24:
                         safe_chunk_size = 6
+                    elif total_vram <= 32:
+                        safe_chunk_size = 10
                     elif total_vram <= 48:
                         safe_chunk_size = 10
+                    elif total_vram <= 80:
+                        safe_chunk_size = 12
                     else:
                         safe_chunk_size = 14
                 except Exception:
-                    if effective_vram >= 48:
+                    if effective_vram >= 80:
                         safe_chunk_size = 14
+                    elif effective_vram >= 48:
+                        safe_chunk_size = 12
+                    elif effective_vram >= 32:
+                        safe_chunk_size = 10
                     elif effective_vram >= 24:
                         safe_chunk_size = 10
-                    elif effective_vram >= 16:
+                    elif effective_vram >= 20:
                         safe_chunk_size = 6
-                    elif effective_vram >= 12:
+                    elif effective_vram >= 16:
                         safe_chunk_size = 3
                     else:
                         safe_chunk_size = 2

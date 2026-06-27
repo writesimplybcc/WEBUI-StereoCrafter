@@ -1658,16 +1658,16 @@ class InpaintingGUI(ThemedTk):
                 total_vram = vram_info.get('total', 8)
             except Exception:
                 total_vram = 8
-            if total_vram <= 8:
-                chunk_by_vram = 2
-            elif total_vram <= 12:
+            if total_vram <= 12:
                 chunk_by_vram = 3
-            elif total_vram <= 16:
-                chunk_by_vram = 4
             elif total_vram <= 24:
+                chunk_by_vram = 4
+            elif total_vram <= 32:
                 chunk_by_vram = 6
             elif total_vram <= 48:
                 chunk_by_vram = 10
+            elif total_vram <= 80:
+                chunk_by_vram = 12
             else:
                 chunk_by_vram = 14
             frame_h = input_frames_to_pipeline.shape[2]

@@ -452,16 +452,18 @@ class SplatterWebUI:
             vram_tier = vram_cfg.get('_effective_vram_tier', total_vram)
         except Exception:
             vram_tier = total_vram
-        if vram_tier >= 48:
+        if vram_tier >= 80:
+            batch_full_default, batch_low_default = 25, 35
+        elif vram_tier >= 48:
             batch_full_default, batch_low_default = 20, 30
+        elif vram_tier >= 32:
+            batch_full_default, batch_low_default = 16, 24
         elif vram_tier >= 24:
             batch_full_default, batch_low_default = 14, 20
         elif vram_tier >= 12:
-            batch_full_default, batch_low_default = 10, 15
-        elif vram_tier >= 8:
-            batch_full_default, batch_low_default = 6, 10
+            batch_full_default, batch_low_default = 10, 14
         else:
-            batch_full_default, batch_low_default = 4, 6
+            batch_full_default, batch_low_default = 8, 12
         self.batch_size = int(self.app_config.get("batch_size", str(batch_full_default)))
         self.low_res_batch_size = int(self.app_config.get("low_res_batch_size", str(batch_low_default)))
 
@@ -5071,23 +5073,73 @@ class SplatterWebUI:
                 total_vram_gb = 8  # Conservative fallback
                 gpu_name = "unknown"
 
-            # Determine scaling aggressiveness based on VRAM
-            if total_vram_gb >= 24:
-                # High VRAM GPUs (RTX 4090, A6000, etc.)
+            # Determine scaling aggressiveness based on VRAM (6 tiers)
+            if total_vram_gb >= 80:
+                scaling_mode = "ultra"
+                logger.info(f"Ultra VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using ultra scaling")
+            elif total_vram_gb >= 48:
+                scaling_mode = "aggressive_plus"
+                logger.info(f"High+ VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using aggressive_plus scaling")
+            elif total_vram_gb >= 32:
                 scaling_mode = "aggressive"
                 logger.info(f"High VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using aggressive scaling")
+            elif total_vram_gb >= 24:
+                scaling_mode = "moderate"
+                logger.info(f"Medium+ VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using moderate scaling")
             elif total_vram_gb >= 12:
-                # Medium VRAM GPUs (RTX 3060 12GB, RTX 3080, etc.)
-                scaling_mode = "conservative"
-                logger.info(f"Medium VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using conservative scaling")
+                scaling_mode = "mild_conservative"
+                logger.info(f"Medium VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using mild_conservative scaling")
             else:
-                # Low VRAM GPUs (<12GB)
                 scaling_mode = "very_conservative"
-                logger.info(f"Low VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using very conservative scaling")
+                logger.info(f"Low VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using very_conservative scaling")
 
             # Determine low-res settings based on input resolution and GPU VRAM
-            if scaling_mode == "aggressive":
-                # High VRAM: Use standard scaling
+            if scaling_mode == "ultra":
+                # Ultra VRAM (80GB+): Near-full resolution
+                if width >= 3840 and height >= 2160:
+                    low_res_width, low_res_height, resolution_name = 3840, 2160, "4K"
+                elif width >= 2560 and height >= 1440:
+                    low_res_width, low_res_height, resolution_name = 2560, 1440, "1440p"
+                elif width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 1920, 1080, "1080p"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "720p"
+                else:
+                    low_res_width, low_res_height = width, height
+                    resolution_name = f"{width}×{height}"
+
+            elif scaling_mode == "aggressive_plus":
+                # High+ VRAM (48-80GB): 1440p cap for 4K
+                if width >= 3840 and height >= 2160:
+                    low_res_width, low_res_height, resolution_name = 2560, 1440, "4K"
+                elif width >= 2560 and height >= 1440:
+                    low_res_width, low_res_height, resolution_name = 1920, 1080, "1440p"
+                elif width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 1920, 1080, "1080p"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "720p"
+                else:
+                    low_res_width = max(640, (width * 2) // 3)
+                    low_res_height = max(360, (height * 2) // 3)
+                    resolution_name = f"{width}×{height}"
+
+            elif scaling_mode == "aggressive":
+                # High VRAM (32-48GB): 1440p cap for 4K, 1080p for 1440p
+                if width >= 3840 and height >= 2160:
+                    low_res_width, low_res_height, resolution_name = 2560, 1440, "4K"
+                elif width >= 2560 and height >= 1440:
+                    low_res_width, low_res_height, resolution_name = 1920, 1080, "1440p"
+                elif width >= 1920 and height >= 1080:
+                    low_res_width, low_res_height, resolution_name = 1280, 720, "1080p"
+                elif width >= 1280 and height >= 720:
+                    low_res_width, low_res_height, resolution_name = 960, 540, "720p"
+                else:
+                    low_res_width = max(640, (width * 2) // 3)
+                    low_res_height = max(360, (height * 2) // 3)
+                    resolution_name = f"{width}×{height}"
+
+            elif scaling_mode == "moderate":
+                # Medium+ VRAM (24-32GB): 1080p cap for 4K
                 if width >= 3840 and height >= 2160:
                     low_res_width, low_res_height, resolution_name = 1920, 1080, "4K"
                 elif width >= 2560 and height >= 1440:
@@ -5101,24 +5153,23 @@ class SplatterWebUI:
                     low_res_height = max(360, (height * 2) // 3)
                     resolution_name = f"{width}×{height}"
 
-            elif scaling_mode == "conservative":
-                # Medium VRAM: More conservative scaling
+            elif scaling_mode == "mild_conservative":
+                # Medium VRAM (12-24GB): 540p for 1080p
                 if width >= 3840 and height >= 2160:
                     low_res_width, low_res_height, resolution_name = 1280, 720, "4K"
                 elif width >= 2560 and height >= 1440:
                     low_res_width, low_res_height, resolution_name = 960, 540, "1440p"
                 elif width >= 1920 and height >= 1080:
-                    low_res_width, low_res_height, resolution_name = 960, 540, "1080p"
+                    low_res_width, low_res_height, resolution_name = 854, 480, "1080p"
                 elif width >= 1280 and height >= 720:
                     low_res_width, low_res_height, resolution_name = 640, 360, "720p"
                 else:
-                    # Small inputs: use 1/2 scale for conservative GPUs
                     low_res_width = max(320, width // 2)
                     low_res_height = max(240, height // 2)
                     resolution_name = f"{width}×{height}"
 
             else:  # very_conservative
-                # Low VRAM: Very aggressive downscaling
+                # Low VRAM (<12GB): Very aggressive downscaling
                 if width >= 1920 and height >= 1080:
                     low_res_width, low_res_height, resolution_name = 640, 360, "HD"
                 elif width >= 1280 and height >= 720:
