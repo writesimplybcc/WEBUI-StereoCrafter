@@ -14,6 +14,7 @@ COPY webui.py .
 COPY requirements-docker.txt .
 COPY WEBUI_StereoCrafter_GPU_Presets_Guide.md .
 # Startup scripts
+COPY download_weights.sh .
 COPY start-with-filebrowser.sh .
 COPY runpod-docker-startup.sh .
 
