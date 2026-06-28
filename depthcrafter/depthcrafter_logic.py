@@ -124,14 +124,19 @@ class DepthCrafterDemo:
                     _logger.info("xFormers memory-efficient attention disabled by global setting.")
             
             try:
-                if cpu_offload_lower in ("model", "sequential") and hasattr(self.pipe.unet, 'disable_gradient_checkpointing'):
-                    self.pipe.unet.disable_gradient_checkpointing()
-                    _logger.info("Gradient checkpointing DISABLED for CPU offload stability.")
+                if cpu_offload_lower in ("model", "sequential"):
+                    if hasattr(self.pipe.unet, 'disable_gradient_checkpointing'):
+                        self.pipe.unet.disable_gradient_checkpointing()
+                        _logger.info("Gradient checkpointing DISABLED for CPU offload stability.")
+                elif cpu_offload_lower == 'none':
+                    if hasattr(self.pipe.unet, 'disable_gradient_checkpointing'):
+                        self.pipe.unet.disable_gradient_checkpointing()
+                        _logger.info("Gradient checkpointing DISABLED (full CUDA mode, speed priority).")
                 else:
                     self.pipe.unet.enable_gradient_checkpointing()
                     _logger.info("Gradient checkpointing enabled on UNet for memory efficiency.")
             except Exception as e:
-                _logger.warning(f"Could not configure gradient checkpointing: {e}")
+                _logger.warning(f"Could not configure checkpointing: {e}")
             
             try:
                 from dependency.stereocrafter_util import get_current_vram_usage
