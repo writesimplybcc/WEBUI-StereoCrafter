@@ -51,7 +51,7 @@ class DepthCrafterWebUI(BaseWebUI):
             total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
             
             # 24GB+ VRAM: No offload (fastest, model stays on GPU)
-            if total_dedicated_gb >= 24:
+            if total_dedicated_gb >= 20: # was >= 24
                 default_offload = 'none'
             # RTX 3060 12GB-24GB: Use model offload for better performance
             elif total_dedicated_gb >= 12:
