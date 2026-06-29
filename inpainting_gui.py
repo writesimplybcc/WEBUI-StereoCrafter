@@ -12,9 +12,12 @@ from typing import Optional, Tuple, Callable
 import numpy as np
 import torch
 
+if torch.cuda.is_available():
+    torch.cuda.set_per_process_memory_fraction(0.90, 0)
+
 # Optimize CUDA memory allocation to avoid fragmentation
 # This must be set before any CUDA operations
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
 
 from decord import VideoReader, cpu
 # FlashAttention requires optional dependency; attempt safe imports

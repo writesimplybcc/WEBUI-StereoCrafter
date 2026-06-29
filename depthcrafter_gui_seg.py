@@ -13,6 +13,9 @@ import time
 import numpy as np
 import torch
 import logging # Import standard logging
+
+if torch.cuda.is_available():
+    torch.cuda.set_per_process_memory_fraction(0.90, 0)
 import random
 
 # Configure a logger for this module

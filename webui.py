@@ -15,6 +15,9 @@ import torch
 import dependency.stereocrafter_util as sc_util
 from dependency.stereocrafter_util import check_cuda_availability
 
+if torch.cuda.is_available():
+    torch.cuda.set_per_process_memory_fraction(0.90, 0)
+
 # Import UI components from the modular structure
 from stereocrafter_ui.depthcrafter import DepthCrafterWebUI
 from stereocrafter_ui.splatting import SplatterWebUI

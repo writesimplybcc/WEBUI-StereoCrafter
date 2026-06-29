@@ -133,7 +133,8 @@ class RenderProcessor:
             True if completed successfully, False otherwise
         """
         logger.debug("==> Initializing ForwardWarpStereo module")
-        stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        stereo_projector = ForwardWarpStereo(occlu_map=True).to(device)
 
         height, width = target_output_height, target_output_width
         if not is_test_mode:
@@ -626,8 +627,9 @@ class RenderProcessor:
         # Depth is already resized to video dimensions at the start of the render loop.
 
         # Move to GPU
-        source_tensor = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).float().cuda() / 255.0
-        depth_tensor = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).float().cuda()
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        source_tensor = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).to(device, torch.float16) / 255.0
+        depth_tensor = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).to(device, torch.float16)
 
         from core.splatting.forward_warp import execute_forward_warp
 

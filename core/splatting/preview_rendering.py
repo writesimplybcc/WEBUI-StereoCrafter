@@ -225,15 +225,16 @@ class PreviewRenderer:
             W_target, H_target = self._calculate_low_res_dimensions(W_orig, H_orig, settings.get("target_width", 0))
 
             try:
+                device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
                 source_resized = F.interpolate(
-                    source_frame.cuda(), size=(H_target, W_target), mode="bilinear", align_corners=False
+                    source_frame.to(device, torch.float16), size=(H_target, W_target), mode="bilinear", align_corners=False
                 )
             except Exception as e:
                 self.logger.error(f"Low-Res preview resize failed: {e}. Falling back to original.")
                 W_target, H_target = W_orig, H_orig
-                source_resized = source_frame.cuda()
+                source_resized = source_frame.to(device, torch.float16)
         else:
-            source_resized = source_frame.cuda()
+            source_resized = source_frame.to(device, torch.float16)
 
         # Process depth frame
         depth_processed = self._process_depth_for_preview(
@@ -244,10 +245,10 @@ class PreviewRenderer:
             return None
 
         # Perform splatting
-        stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+        stereo_projector = ForwardWarpStereo(occlu_map=True).to(device)
 
         # Resize depth to target resolution
-        disp_map = torch.from_numpy(depth_processed).unsqueeze(0).unsqueeze(0).float().cuda()
+        disp_map = torch.from_numpy(depth_processed).unsqueeze(0).unsqueeze(0).to(device, torch.float16)
 
         if H_target != disp_map.shape[2] or W_target != disp_map.shape[3]:
             disp_map = F.interpolate(disp_map, size=(H_target, W_target), mode="bilinear", align_corners=False)

@@ -1674,7 +1674,18 @@ def get_vram_config(force_refresh: bool = False):
             'batch_chunk_size': 10,
             'processing_chunk_size': 50
         }
-    elif effective_vram_gb >= 40:  # 48GB tier (optimized for RTX 6000 Ada)
+    elif effective_vram_gb >= 96:  # RTX Pro 6000 / 6000 WS (96GB)
+        logger.info("✓ Selected: 96GB tier (RTX Pro 6000 — maximum speed optimization)")
+        logger.info(f"  window_size: 140, overlap: 6")
+        config = {
+            'decode_chunk_size': 20,
+            'window_size': 140,
+            'overlap': 6,            # Balanced for speed and quality
+            'frames_chunk': 40,
+            'batch_chunk_size': 30,
+            'processing_chunk_size': 140
+        }
+    elif effective_vram_gb >= 48:  # RTX 6000 Ada (48GB)
         logger.info("✓ Selected: 48GB tier (aggressive speed optimization)")
         logger.info(f"  window_size: 120, overlap: 6")
         config = {
@@ -1685,16 +1696,27 @@ def get_vram_config(force_refresh: bool = False):
             'batch_chunk_size': 24,
             'processing_chunk_size': 120
         }
-    elif effective_vram_gb >= 20:
-        logger.info("✓ Selected: 24GB tier (optimized for speed)")
-        logger.info(f"  window_size: 130, overlap: 6")
+    elif effective_vram_gb >= 32:  # RTX 5090 (32GB)
+        logger.info("✓ Selected: 32GB tier (RTX 5090 — high-speed optimization)")
+        logger.info(f"  window_size: 125, overlap: 6")
         config = {
-            'decode_chunk_size': 14,
-            'window_size': 130,
+            'decode_chunk_size': 15,
+            'window_size': 125,
+            'overlap': 6,            # Balanced for speed and quality
+            'frames_chunk': 30,
+            'batch_chunk_size': 22,
+            'processing_chunk_size': 110
+        }
+    elif effective_vram_gb >= 20:  # RTX 3090/4090 (24GB)
+        logger.info("✓ Selected: 24GB tier (optimized for speed)")
+        logger.info(f"  window_size: 110, overlap: 6")
+        config = {
+            'decode_chunk_size': 12,
+            'window_size': 110,
             'overlap': 6,            # Balanced for speed and quality
             'frames_chunk': 24,
-            'batch_chunk_size': 20,
-            'processing_chunk_size': 130
+            'batch_chunk_size': 18,
+            'processing_chunk_size': 100
         }
     elif effective_vram_gb >= 12:
         logger.info("✓ Selected: 12GB tier")

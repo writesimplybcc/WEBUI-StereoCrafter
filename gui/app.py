@@ -1390,7 +1390,8 @@ class SplatterGUI(ThemedTk):
             depth_blur_size_y: float = 0.0,
         ):
         logger.debug("==> Initializing ForwardWarpStereo module")
-        stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        stereo_projector = ForwardWarpStereo(occlu_map=True).to(device)
 
         num_frames = total_frames_to_process
         height, width = target_output_height, target_output_width
@@ -1550,9 +1551,10 @@ class SplatterGUI(ThemedTk):
 
                 # --- TIMER 3: HtoD Transfer (CPU to GPU) ---
                 t_start_transfer_HtoD = time.perf_counter()
+                device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
                 
-                left_video_tensor = torch.from_numpy(batch_frames_numpy).permute(0, 3, 1, 2).float().cuda() / 255.0
-                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).float().cuda()        
+                left_video_tensor = torch.from_numpy(batch_frames_numpy).permute(0, 3, 1, 2).to(device, torch.float16) / 255.0
+                disp_map_tensor = torch.from_numpy(batch_depth_normalized).unsqueeze(1).to(device, torch.float16)        
                 disp_map_tensor = (disp_map_tensor - zero_disparity_anchor_val) * 2.0
                 disp_map_tensor = disp_map_tensor * max_disp
 
@@ -3263,18 +3265,19 @@ class SplatterGUI(ThemedTk):
                     logger.debug(f"Low-Res preview: AR corrected target {W_target}x{H_target}. (Original W: {W_orig}, H: {H_orig})")
                 
                 # Resize Left Eye to aspect-ratio-correct low-res target for consistency
+                device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
                 left_eye_tensor_resized = F.interpolate(
-                    left_eye_tensor.cuda(), 
-                    size=(H_target, W_target), 
-                    mode='bilinear', 
+                    left_eye_tensor.to(device, torch.float16),
+                    size=(H_target, W_target),
+                    mode='bilinear',
                     align_corners=False
                 )
             except Exception as e:
-                logger.error(f"Low-Res preview failed during AR calculation/resize: {e}. Falling back to original res.", exc_info=True)
+                logger.error(f"Low-Res preview failed during AR calculation/resize: {e}. Falling back to original.", exc_info=True)
                 W_target, H_target = W_orig, H_orig
-                left_eye_tensor_resized = left_eye_tensor.cuda()
+                left_eye_tensor_resized = left_eye_tensor.to(device, torch.float16)
         else:
-            left_eye_tensor_resized = left_eye_tensor.cuda() # Use original res
+            left_eye_tensor_resized = left_eye_tensor.to(device, torch.float16) # Use original res
 
         logger.debug(f"Preview Params: {params}")
         logger.debug(f"Target Resolution: {W_target}x{H_target} (Low-Res: {is_low_res_preview})")
@@ -3388,9 +3391,10 @@ class SplatterGUI(ThemedTk):
         logger.debug(f"Final normalized depth shape: {depth_normalized.shape}, range: [{depth_normalized.min():.2f}, {depth_normalized.max():.2f}]")
 
         # --- Perform Splatting ---
-        stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        stereo_projector = ForwardWarpStereo(occlu_map=True).to(device)
         # Ensure depth map is resized to the target resolution (low-res or original)
-        disp_map_tensor = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0).float().cuda()
+        disp_map_tensor = torch.from_numpy(depth_normalized).unsqueeze(0).unsqueeze(0).to(device, torch.float16)
         
         # Resize Disparity Map to match the (potentially resized) Left Eye
         if H_target != disp_map_tensor.shape[2] or W_target != disp_map_tensor.shape[3]:
