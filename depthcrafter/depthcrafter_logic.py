@@ -217,7 +217,7 @@ class DepthCrafterDemo:
                      user_target_width: int,
                      segment_job_info: Optional[dict],
                      job_specific_metadata: dict
-                      ) -> Tuple[Optional[np.ndarray], float, int, int]:
+                      ) -> Tuple[Optional[np.ndarray], float, int, int, float]:
         # Automatically reduce resolution for very high res to prevent OOM during loading
         # Dynamic max_res based on available VRAM
         try:
@@ -358,18 +358,18 @@ class DepthCrafterDemo:
             else:
                 job_specific_metadata["status"] = "failure_unknown_source_type_in_dict"
                 _logger.error(f"Frames Load: Unknown source type '{source_type}' in input dictionary.")
-                return None, 0.0
+                return None, 0.0, 0, 0, 8.0
 
         else:
             job_specific_metadata["status"] = "failure_no_input_source"
             _logger.error("Cannot load frames: No video path or numpy array provided.")
-            return None, 0.0
+            return None, 0.0, 0, 0, 8.0
         
         if original_h_loaded is not None:
             job_specific_metadata["original_height_loaded"] = original_h_loaded
             job_specific_metadata["original_width_loaded"] = original_w_loaded
 
-        return actual_frames_to_process, actual_fps_for_save, job_specific_metadata["processed_height"], job_specific_metadata["processed_width"]
+        return actual_frames_to_process, actual_fps_for_save, job_specific_metadata["processed_height"], job_specific_metadata["processed_width"], effective_vram
 
     def _handle_no_frames_failure(self, job_specific_metadata: dict, full_save_path: str,
                                   infer_start_time: float, actual_fps_for_save: float,
@@ -406,6 +406,7 @@ class DepthCrafterDemo:
                            pipe_call_window_size: int, pipe_call_overlap: int,
                            segment_job_info: Optional[dict],
                            actual_processed_height: int, actual_processed_width: int, # <--- RENAMED
+                           effective_vram: float,
                            enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
                            ) -> np.ndarray:
         current_pipe_window_for_call = pipe_call_window_size
@@ -835,7 +836,7 @@ class DepthCrafterDemo:
             pipe_call_window_size, pipe_call_overlap, original_video_basename
         )
 
-        actual_frames_to_process, actual_fps_for_save, actual_processed_h, actual_processed_w = self._load_frames(
+        actual_frames_to_process, actual_fps_for_save, actual_processed_h, actual_processed_w, effective_vram = self._load_frames(
             video_path_or_job_info=video_path_or_job_info_dict,
             frames_array_if_provided=frames_array_if_provided,
             process_length_for_read=process_length_for_read,
@@ -866,7 +867,7 @@ class DepthCrafterDemo:
         inference_result = self._perform_inference(
             actual_frames_to_process, guidance_scale, num_denoising_steps,
             pipe_call_window_size, pipe_call_overlap, segment_job_info,
-            actual_processed_h, actual_processed_w,
+            actual_processed_h, actual_processed_w, effective_vram,
             enable_tiling, tile_size, tile_overlap
         )
 
