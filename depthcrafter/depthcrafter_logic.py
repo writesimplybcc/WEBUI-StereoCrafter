@@ -233,17 +233,17 @@ class DepthCrafterDemo:
             else:
                 effective_vram = total_vram if free_percentage > 0.8 else free_vram * 1.5  # Increased from 1.2 for safety
             # Set max_res based on effective VRAM tiers
-            if effective_vram < 8:
+            if effective_vram < 7.5:
                 max_res = 512
-            elif effective_vram < 12:
+            elif effective_vram < 11.5:
                 max_res = 768
-            elif effective_vram < 24:
+            elif effective_vram < 23.5:
                 max_res = 1024
-            elif effective_vram < 32:
+            elif effective_vram < 31.5:
                 max_res = 1920
-            elif effective_vram < 48:
+            elif effective_vram < 47.5:
                 max_res = 1920
-            elif effective_vram < 80:
+            elif effective_vram < 79.5:
                 max_res = 2048
             else:
                 max_res = 4096
@@ -418,17 +418,17 @@ class DepthCrafterDemo:
             current_pipe_overlap_for_call = max(0, current_pipe_window_for_call // 4)  # Small overlap for continuity
         # For high resolution, reduce window size to prevent OOM based on available VRAM
         if actual_processed_height > 1000 or actual_processed_width > 1000:
-            if effective_vram >= 80:
+            if effective_vram >= 79.5:
                 max_win, max_ovlp = 130, 10
-            elif effective_vram >= 48:
+            elif effective_vram >= 47.5:
                 max_win, max_ovlp = 120, 8
-            elif effective_vram >= 32:
+            elif effective_vram >= 31.5:
                 max_win, max_ovlp = 120, 6
-            elif effective_vram >= 24:
+            elif effective_vram >= 23.5:
                 max_win, max_ovlp = 120, 6
-            elif effective_vram >= 20:
+            elif effective_vram >= 19.5:
                 max_win, max_ovlp = 48, 5
-            elif effective_vram >= 16:
+            elif effective_vram >= 15.5:
                 max_win, max_ovlp = 32, 5
             else:
                 max_win, max_ovlp = 16, 4
@@ -468,17 +468,17 @@ class DepthCrafterDemo:
                     else:
                         safe_chunk_size = 14
                 except Exception:
-                    if effective_vram >= 80:
+                    if effective_vram >= 79.5:
                         safe_chunk_size = 14
-                    elif effective_vram >= 48:
+                    elif effective_vram >= 47.5:
                         safe_chunk_size = 12
-                    elif effective_vram >= 32:
+                    elif effective_vram >= 31.5:
                         safe_chunk_size = 10
-                    elif effective_vram >= 24:
+                    elif effective_vram >= 23.5:
                         safe_chunk_size = 10
-                    elif effective_vram >= 20:
+                    elif effective_vram >= 19.5:
                         safe_chunk_size = 6
-                    elif effective_vram >= 16:
+                    elif effective_vram >= 15.5:
                         safe_chunk_size = 3
                     else:
                         safe_chunk_size = 2
