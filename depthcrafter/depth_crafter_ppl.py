@@ -200,9 +200,14 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
         if needs_upcasting:
             self.vae.to(dtype=torch.float32)
 
-        # Adjust chunk size for high resolution to prevent OOM, but keep sufficient for temporal VAE
-        if video.shape[2] > 2000 or video.shape[3] > 2000:
-            encode_chunk_size = 4
+        # Adjust chunk size for high resolution to prevent OOM
+        # The VAE encoder is purely 2D (temporal convolutions only exist in the decoder),
+        # so encode_chunk_size=1 is perfectly safe for temporal consistency and minimizes VRAM spikes.
+        pixels = video.shape[2] * video.shape[3]
+        if pixels > 1500000:  # ~1080p and above
+            encode_chunk_size = 1
+        elif pixels > 1000000: # ~1024x1024
+            encode_chunk_size = min(2, decode_chunk_size)
         else:
             encode_chunk_size = decode_chunk_size
 
