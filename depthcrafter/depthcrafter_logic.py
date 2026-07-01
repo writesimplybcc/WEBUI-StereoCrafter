@@ -423,17 +423,17 @@ class DepthCrafterDemo:
         # For high resolution, reduce window size to prevent OOM based on available VRAM
         if actual_processed_height > 1000 or actual_processed_width > 1000:
             if effective_vram >= 79.5:
-                max_win, max_ovlp = 130, 10
+                max_win, max_ovlp = 130, 20
             elif effective_vram >= 47.5:
-                max_win, max_ovlp = 120, 8
+                max_win, max_ovlp = 110, 15
             elif effective_vram >= 31.5:
-                max_win, max_ovlp = 120, 6
+                max_win, max_ovlp = 80, 12
             elif effective_vram >= 23.5:
-                max_win, max_ovlp = 120, 6
+                max_win, max_ovlp = 60, 10
             elif effective_vram >= 19.5:
-                max_win, max_ovlp = 48, 5
+                max_win, max_ovlp = 48, 8
             elif effective_vram >= 15.5:
-                max_win, max_ovlp = 32, 5
+                max_win, max_ovlp = 32, 6
             else:
                 max_win, max_ovlp = 16, 4
             current_pipe_window_for_call = min(current_pipe_window_for_call, max_win)
