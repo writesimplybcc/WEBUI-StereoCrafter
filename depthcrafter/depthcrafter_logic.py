@@ -447,41 +447,48 @@ class DepthCrafterDemo:
             torch.cuda.empty_cache()
             with torch.inference_mode():
                 # Determine safe decode_chunk_size based on VRAM to prevent VAE OOM
+                # Adjust safe_chunk_size based on resolution
+                pixels = actual_processed_height * actual_processed_width
+                base_pixels = 1024 * 1024
+                pixel_ratio = max(1.0, pixels / base_pixels)
+
                 try:
                     from dependency.stereocrafter_util import get_current_vram_usage
                     vram_info = get_current_vram_usage()
                     total_vram = vram_info.get('total', 8)
                     if total_vram <= 8:
-                        safe_chunk_size = 1
+                        base_chunk = 1
                     elif total_vram <= 12:
-                        safe_chunk_size = 2
+                        base_chunk = 2
                     elif total_vram <= 16:
-                        safe_chunk_size = 3
+                        base_chunk = 3
                     elif total_vram <= 24:
-                        safe_chunk_size = 6
+                        base_chunk = 6
                     elif total_vram <= 32:
-                        safe_chunk_size = 10
+                        base_chunk = 10
                     elif total_vram <= 48:
-                        safe_chunk_size = 10
+                        base_chunk = 10
                     elif total_vram <= 80:
-                        safe_chunk_size = 12
+                        base_chunk = 12
                     else:
-                        safe_chunk_size = 14
+                        base_chunk = 14
                 except Exception:
                     if effective_vram >= 79.5:
-                        safe_chunk_size = 14
+                        base_chunk = 14
                     elif effective_vram >= 47.5:
-                        safe_chunk_size = 12
+                        base_chunk = 12
                     elif effective_vram >= 31.5:
-                        safe_chunk_size = 10
+                        base_chunk = 10
                     elif effective_vram >= 23.5:
-                        safe_chunk_size = 10
+                        base_chunk = 10
                     elif effective_vram >= 19.5:
-                        safe_chunk_size = 6
+                        base_chunk = 6
                     elif effective_vram >= 15.5:
-                        safe_chunk_size = 3
+                        base_chunk = 3
                     else:
-                        safe_chunk_size = 2
+                        base_chunk = 2
+                
+                safe_chunk_size = max(1, int(base_chunk / pixel_ratio))
 
                 pipe_kwargs = dict(
                     video=actual_frames_to_process,
