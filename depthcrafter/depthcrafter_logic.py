@@ -149,16 +149,6 @@ class DepthCrafterDemo:
                             _logger.info("VAE slicing enabled for memory efficiency.")
                     except Exception as e:
                         _logger.warning(f"VAE slicing not supported: {e}")
-                    
-                    try:
-                        if hasattr(self.pipe, 'enable_vae_tiling'):
-                            self.pipe.enable_vae_tiling()
-                            _logger.info("VAE tiling enabled for memory efficiency.")
-                        elif hasattr(self.pipe.vae, 'enable_tiling'):
-                            self.pipe.vae.enable_tiling()
-                            _logger.info("VAE tiling enabled directly on VAE for memory efficiency.")
-                    except Exception as e:
-                        _logger.warning(f"VAE tiling not supported: {e}")
                 else:
                     _logger.info("VAE slicing/tiling disabled (sufficient VRAM).")
             except Exception as e:
