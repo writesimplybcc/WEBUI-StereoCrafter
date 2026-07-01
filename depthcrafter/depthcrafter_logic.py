@@ -143,12 +143,26 @@ class DepthCrafterDemo:
                 vram_info = get_current_vram_usage()
                 total_vram = vram_info.get('total', 8)
                 if total_vram < 24:
-                    self.pipe.enable_vae_slicing()
-                    _logger.info("VAE slicing enabled for memory efficiency.")
+                    try:
+                        if hasattr(self.pipe, 'enable_vae_slicing'):
+                            self.pipe.enable_vae_slicing()
+                            _logger.info("VAE slicing enabled for memory efficiency.")
+                    except Exception as e:
+                        _logger.warning(f"VAE slicing not supported: {e}")
+                    
+                    try:
+                        if hasattr(self.pipe, 'enable_vae_tiling'):
+                            self.pipe.enable_vae_tiling()
+                            _logger.info("VAE tiling enabled for memory efficiency.")
+                        elif hasattr(self.pipe.vae, 'enable_tiling'):
+                            self.pipe.vae.enable_tiling()
+                            _logger.info("VAE tiling enabled directly on VAE for memory efficiency.")
+                    except Exception as e:
+                        _logger.warning(f"VAE tiling not supported: {e}")
                 else:
-                    _logger.info("VAE slicing disabled (sufficient VRAM, smaller tensors fit without slicing).")
+                    _logger.info("VAE slicing/tiling disabled (sufficient VRAM).")
             except Exception as e:
-                _logger.warning(f"Could not determine VRAM for VAE slicing decision, disabling slicing: {e}")
+                _logger.warning(f"Could not determine VRAM for VAE optimizations: {e}")
         except Exception as e:
             _logger.critical(f"CRITICAL: Failed to initialize DepthCrafterPipeline: {e}", exc_info=True)
             raise # Re-raise after logging
