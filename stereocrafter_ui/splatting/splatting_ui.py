@@ -2334,7 +2334,7 @@ class SplatterWebUI:
         )
         
         if needs_processing:
-            device = torch.device('cpu')
+            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
             tensor_4d = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).to(device)
             
             # Left-only pre-step (directional): applied before normal X/Y dilate/blur to preserve parity
