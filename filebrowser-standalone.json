@@ -1,5 +1,5 @@
 {
-  "port": 8080,
+  "port": 7878,
   "address": "0.0.0.0",
   "log": "stdout",
   "database": "./filebrowser-standalone.db",

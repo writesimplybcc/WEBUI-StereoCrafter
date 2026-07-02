@@ -40,5 +40,5 @@ USER root
 # Override the base image's entrypoint to allow normal container execution
 ENTRYPOINT []
 
-# Expose Gradio (7860) and FileBrowser (8080)
-EXPOSE 7860 8080
+# Expose Gradio (7860) and FileBrowser (7878)
+EXPOSE 7860 7878

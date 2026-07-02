@@ -51,7 +51,7 @@ COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 
 # Expose ports
-EXPOSE 7860 8080
+EXPOSE 7860 7878
 
 # Use entrypoint to inject RSA key, then run the startup script
 ENTRYPOINT ["/workspace/entrypoint.sh"]

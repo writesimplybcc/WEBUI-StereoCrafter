@@ -18,7 +18,7 @@ if [ ! -f "$DB_FILE" ]; then
     mkdir -p /workspace/.filebrowser
     filebrowser config init --database "$DB_FILE"
     filebrowser config set --address 0.0.0.0 --database "$DB_FILE"
-    filebrowser config set --port 8080 --database "$DB_FILE"
+    filebrowser config set --port 7878 --database "$DB_FILE"
     filebrowser config set --root /workspace/WEBUI-StereoCrafter --database "$DB_FILE"
     filebrowser config set --auth.method=json --database "$DB_FILE"
     filebrowser users add "${FB_USERNAME:-admin}" "${FB_PASSWORD:-adminadmin12}" --perm.admin --database "$DB_FILE"
@@ -27,7 +27,7 @@ else
 fi
 
 # Start FileBrowser in background
-echo "Starting FileBrowser on port 8080..."
+echo "Starting FileBrowser on port 7878..."
 nohup filebrowser --database "$DB_FILE" &> /filebrowser.log &
 echo "FileBrowser started"
 

@@ -89,7 +89,7 @@ class CombinedWebUI:
                     with gr.Column():
                          gr.Markdown("### File Browser (External)")
                          gr.Markdown("File Browser runs on a separate port. Click below to access:")
-                         filebrowser_url = "http://localhost:8080"  # Adjust port as needed
+                         filebrowser_url = "http://localhost:7878"  # Adjust port as needed
                          gr.Markdown(f"[Open File Browser]({filebrowser_url})")
                          gr.Button("🔗 Launch File Browser", link=filebrowser_url)
 

@@ -26,7 +26,7 @@ if not exist filebrowser-config mkdir filebrowser-config
 
 REM Create basic configuration
 echo { > filebrowser-config.json
-echo   "port": 8080, >> filebrowser-config.json
+echo   "port": 7878, >> filebrowser-config.json
 echo   "baseURL": "", >> filebrowser-config.json
 echo   "address": "0.0.0.0", >> filebrowser-config.json
 echo   "log": "stdout", >> filebrowser-config.json
@@ -48,7 +48,7 @@ echo } >> filebrowser-config.json
 
 echo Setup complete!
 echo Run: filebrowser.exe --config filebrowser-config.json
-echo Access at: http://localhost:8080
+echo Access at: http://localhost:7878
 echo Username: admin
 echo Password: stereocrafter2026 (CHANGE THIS!)
 pause

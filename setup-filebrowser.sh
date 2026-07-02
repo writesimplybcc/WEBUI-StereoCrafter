@@ -29,7 +29,7 @@ mkdir -p filebrowser-config
 # Create basic configuration
 cat > filebrowser-config.json << 'EOF'
 {
-  "port": 8080,
+  "port": 7878,
   "baseURL": "",
   "address": "0.0.0.0",
   "log": "stdout",
@@ -52,6 +52,6 @@ EOF
 
 echo "Setup complete!"
 echo "Run: ./filebrowser --config filebrowser-config.json"
-echo "Access at: http://localhost:8080"
+echo "Access at: http://localhost:7878"
 echo "Username: admin"
 echo "Password: stereocrafter2026 (CHANGE THIS!)"
