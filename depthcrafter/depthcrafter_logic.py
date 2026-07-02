@@ -429,13 +429,13 @@ class DepthCrafterDemo:
             elif effective_vram >= 31.5:
                 max_win, max_ovlp = 48, 12
             elif effective_vram >= 23.5:
-                max_win, max_ovlp = 32, 10
-            elif effective_vram >= 19.5:
-                max_win, max_ovlp = 24, 6
-            elif effective_vram >= 15.5:
                 max_win, max_ovlp = 16, 4
-            else:
+            elif effective_vram >= 19.5:
+                max_win, max_ovlp = 12, 3
+            elif effective_vram >= 15.5:
                 max_win, max_ovlp = 8, 2
+            else:
+                max_win, max_ovlp = 4, 1
             current_pipe_window_for_call = min(current_pipe_window_for_call, max_win)
             current_pipe_overlap_for_call = min(current_pipe_overlap_for_call, max_ovlp)
 
@@ -505,6 +505,16 @@ class DepthCrafterDemo:
                     overlap=current_pipe_overlap_for_call,
                     decode_chunk_size=safe_chunk_size,
                 )
+
+                if actual_processed_height > 1000 or actual_processed_width > 1000:
+                    try:
+                        if hasattr(self.pipe, 'disable_xformers_memory_efficient_attention'):
+                            self.pipe.disable_xformers_memory_efficient_attention()
+                        if hasattr(self.pipe.unet, 'set_attention_slice'):
+                            self.pipe.unet.set_attention_slice("auto")
+                        _logger.info("Disabled xFormers and enabled UNet attention slicing for 1080p to prevent CUDA grid size overflow.")
+                    except Exception as e:
+                        _logger.warning(f"Could not apply high-res attention fixes: {e}")
 
                 def _run_pipe():
                     try:
