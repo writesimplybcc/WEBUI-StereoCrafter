@@ -221,6 +221,8 @@ class DepthCrafterPipeline(StableVideoDiffusionPipeline):
 
         # Clear memory after VAE encoding
         if torch.cuda.is_available():
+            del video
+            del noise
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
