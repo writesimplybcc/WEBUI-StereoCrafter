@@ -163,9 +163,9 @@ python webui.py  →  Splatting tab
 
 | Parameter | Setting | Notes |
 |-----------|---------|-------|
-| **Blur X** | `15` | Softens depth boundaries |
-| **Blur Y** | `15` | Match Blur X |
-| **Disparity** | `23` | Stereo separation strength |
+| **Blur X/Y** | `17` | Softens depth boundaries |
+| **Dilate X/Y** | `10` | Expands occlusion masks |
+| **Disparity** | `20` | Stereo separation strength (1%) |
 | **Convergence** | `0.6` | Eye convergence point |
 | **Output CRF** | `23` | Quality (lower = better, 18-28 range) |
 | **Dual Output** | ☐ Unchecked | Use 4-panel (splatted4) |
@@ -179,9 +179,9 @@ python webui.py  →  Splatting tab
 
 | Parameter | Setting | Notes |
 |-----------|---------|-------|
-| **Blur X** | `20` | Higher for 4K depth boundaries |
-| **Blur Y** | `20` | Match Blur X |
-| **Disparity** | `23` | Keep as-is |
+| **Blur X/Y** | `37` | Highly softened for 4K boundaries |
+| **Dilate X/Y** | `22` | Significantly expanded for 4K |
+| **Disparity** | `20` | Keep at 1% for natural viewing |
 | **Convergence** | `0.6` | Keep as-is |
 | **Output CRF** | `23` | Quality (lower = better) |
 | **Dual Output** | ☐ Unchecked | 4-panel = 7680×4320 |
@@ -191,21 +191,21 @@ python webui.py  →  Splatting tab
 **Output Resolution:** 7680×4320 (4-panel from 4K source)
 **Expected:** ~10-20 fps on RTX 6000 Ada
 
-#### 8K (7680×4320) — Experimental
+#### 720p (1280×720)
 
 | Parameter | Setting | Notes |
 |-----------|---------|-------|
-| **Blur X** | `25` | Higher for 8K depth boundaries |
-| **Blur Y** | `25` | Match Blur X |
-| **Disparity** | `23` | Keep as-is |
+| **Blur X/Y** | `16` | Standard softening |
+| **Dilate X/Y** | `9` | Standard expansion |
+| **Disparity** | `20` | Stereo separation strength (1%) |
 | **Convergence** | `0.6` | Keep as-is |
 | **Output CRF** | `23` | Quality (lower = better) |
-| **Dual Output** | ☑ Checked | Use 2-panel to save VRAM |
-| **Batch Size** | `4-6` | Reduced for VRAM safety |
+| **Dual Output** | ☐ Unchecked | Use 4-panel |
+| **Batch Size** | `15` | Higher batch size for speed |
 | **Color Tags Mode** | `auto` | Metadata tagging |
 
-**Output Resolution:** 15360×4320 (4-panel) or 7680×4320 (2-panel)
-**Expected:** ~2-5 fps on RTX 6000 Ada
+**Output Resolution:** 2560×1440 (4-panel from 720p source)
+**Expected:** ~60+ fps on most modern GPUs
 
 ---
 
@@ -355,26 +355,32 @@ python webui.py  →  Merging tab
 
 | Resolution | GPU Tier | DepthCrafter | Splatting | Inpainting | Merging |
 |-----------|----------|--------------|-----------|------------|---------|
-| **1080p** | 12GB | Batch 10, Window 80 | Blur 15, Disp 23 | Tiles 2, Chunk 15 | 3840×1080 |
-| **1080p** | 24GB | Batch 15, Window 130 | Blur 15, Disp 23 | Tiles 2, Chunk 23 | 3840×1080 |
-| **1440p** | 24GB | Batch 10, Window 100 | Blur 18, Disp 23 | Tiles 2, Chunk 15 | 5120×1440 |
-| **4K** | 48GB | Batch 8, Window 80 | Blur 20, Disp 23 | Tiles 4, Chunk 8 | 7680×2160 |
-| **4K** | 24GB | Batch 5, Window 60 | Blur 20, Disp 23 | Tiles 4, Chunk 3 | 7680×2160 |
-| **8K** | 48GB | Batch 3, Window 50 | Blur 25, Disp 23 | Tiles 6, Chunk 3 | 15360×4320 |
+| **720p** | 8-12GB| Batch 15, Window 100| Dilate 9, Blur 16, Disp 20 | Tiles 1, Chunk 20 | 2560×720 |
+| **1080p** | 12GB | Batch 10, Window 80 | Dilate 10, Blur 17, Disp 20 | Tiles 2, Chunk 15 | 3840×1080 |
+| **1080p** | 24GB | Batch 15, Window 130 | Dilate 10, Blur 17, Disp 20 | Tiles 2, Chunk 23 | 3840×1080 |
+| **1440p** | 24GB | Batch 10, Window 100 | Dilate 10, Blur 17, Disp 20 | Tiles 2, Chunk 15 | 5120×1440 |
+| **4K** | 48GB | Batch 8, Window 80 | Dilate 22, Blur 37, Disp 20 | Tiles 4, Chunk 8 | 7680×2160 |
+| **4K** | 24GB | Batch 5, Window 60 | Dilate 22, Blur 37, Disp 20 | Tiles 4, Chunk 3 | 7680×2160 |
 
-### Video Length Optimization
+### Video Length Optimization (Max Clip Lengths)
 
-| Duration | Frames (24fps) | Recommended Chunk Size | Total Processing Time (4K, RTX 6000 Ada) |
-|----------|---------------|----------------------|-----------------------------------------|
-| **10 sec** | 240 | Full video | ~5 min |
-| **30 sec** | 720 | Full video | ~15 min |
-| **1 min** | 1440 | Full video | ~30 min |
-| **3 min** | 4320 | Split into 1-min segments | ~90 min |
-| **5 min** | 7200 | Split into 1-min segments | ~150 min |
-| **10 min+** | 14400+ | Split into 2-min segments | Varies |
+Memory fragmentation in PyTorch builds up over time. Even though the system processes video in small chunks, **you must split long videos into smaller clips** to prevent Out-of-Memory (OOM) crashes, especially at 4K.
 
-**Pro Tip:** For videos longer than 3 minutes, split them into smaller clips first. This prevents memory leaks from accumulating and makes it easier to resume if something fails.
+#### 1080p Limits (Any GPU)
+* **DepthCrafter:** ~3 minutes (4320 frames)
+* **Splatting:** ~5 to 10 minutes
+* **Inpainting:** ~1 to 3 minutes
+* **Merging:** Infinite
 
+#### 4K Limits (24GB VRAM)
+When moving from 1080p to 4K, the PyTorch tensors are 4x larger. Your 24GB VRAM will fill up and choke much faster.
+* **DepthCrafter:** ~1 to 2 minutes (1440 - 2880 frames)
+* **Splatting:** ~3 to 5 minutes (4320 - 7200 frames)
+* **Inpainting (The Bottleneck):** **~30 to 60 seconds (720 - 1440 frames)**
+* **Merging:** Infinite
+
+> [!WARNING]
+> **The Golden Rule for 4K / 24GB:** Your entire workflow is bottlenecked by the Inpainting step. You **must** chop your 4K video into 30-second to 1-minute clips maximum. Run all the clips through the pipeline as a batch, and stitch the final 3D outputs back together at the very end.
 ---
 
 ## Troubleshooting
@@ -456,3 +462,76 @@ Step 4: Merging (2 min)
 
 Total Time: ~37 minutes
 ```
+
+---
+
+## Advanced VRAM & Performance Guide
+
+### GPU VRAM Tiers & Auto-Detection
+The system dynamically checks your GPU's available memory and adjusts settings automatically.
+
+**How It Works:**
+1. Checks total VRAM capacity and currently allocated memory.
+2. Calculates free VRAM with a 20% safety margin.
+3. Selects the appropriate tier based on effective VRAM.
+
+**Settings by Tier (DepthCrafter):**
+| Effective VRAM | decode_chunk | window_size | overlap | Typical Use Case |
+|----------------|--------------|-------------|---------|------------------|
+| **< 8GB**      | 2            | 50          | 8       | Very low memory / heavy GPU load |
+| **8-12GB**     | 3            | 60          | 10      | Low memory / moderate GPU load |
+| **12-24GB**    | 6            | 80          | 15      | RTX 3090, RTX 4080, or busy 48GB GPU |
+| **24-48GB**    | 10           | 110         | 25      | RTX 4090, A5000 |
+| **48GB+**      | 8            | 110         | 25      | RTX 6000 Ada (mostly idle) |
+
+**Performance vs Memory Trade-offs:**
+*   **decode_chunk_size (High Memory Impact):** Reduce first if OOM.
+*   **window_size (Very High Memory Impact):** Reduce if still OOM.
+*   **overlap (Medium Memory Impact):** Affects quality, reduce carefully.
+*   **resolution (Very High Memory Impact):** Last resort, affects output quality.
+
+### Hardware Presets Reference
+
+**RTX 3060 12GB (Low VRAM)**
+*   **DepthCrafter:** CPU Offload: "model", Max Res: 1024x1024.
+*   **Splatting:** CPU Offload: "model". Enable downscaling.
+*   **Inpainting:** Max Res: 1024x1024. Guidance Scale: 7.5-12.5.
+*   **Merging:** Unlimited (CPU-bound).
+
+**RTX 5090 32GB (High CUDA Mid VRAM)**
+*   **DepthCrafter:** CPU Offload: "none", Max Res: 1024x1024-1536x1536.
+*   **Splatting:** 8K hires / 4K lowres.
+*   **Inpainting:** Resolution up to 7680x2160.
+*   **Merging:** Enable dithering and gamma.
+
+**RTX 6000 Ada 48GB (Mid VRAM Workstation)**
+*   **DepthCrafter:** CPU Offload: "none", Max Res: 1536x1536-2048x2048.
+*   **Splatting:** 8K hires / 4K lowres.
+*   **Inpainting:** Resolution up to 7680x2160.
+*   **Merging:** Enable percentile normalization.
+
+**RTX 6000 Pro 96GB (High CUDA High VRAM)**
+*   **DepthCrafter:** CPU Offload: "none", Max Res: 2048x2048-4096x4096.
+*   **Splatting:** Up to 8192x4608+.
+*   **Inpainting:** Up to 8192x4320+.
+*   **Merging:** All quality options enabled.
+
+---
+
+## 4K Processing Segment Guidelines (RTX 6000 Ada)
+
+When processing 4K videos, you must use **Decode Chunk Size = 2**. Depending on the length of your 4K video, use the following segmenting strategies to prevent memory leaks:
+
+*   **Short (1-100 frames):** Full Video Mode. Window 30, Overlap 5.
+*   **Medium (101-300 frames):** Full Video Mode. Window 25, Overlap 8.
+*   **Long (301-500 frames):** Process as Segments. Window 20, Overlap 10. Switch CPU Offload to `sequential`.
+*   **Very Long (501+ frames):** Process as Segments. Window 20, Overlap 10. Keep intermediate NPZ files for recovery.
+
+**OOM Error During VAE Encoding:**
+*   Reduce `decode_chunk_size` to 2.
+*   Reduce `window_size` to 20-25.
+*   Change CPU Offload to `sequential`.
+*   Downscale resolution to 1440p or 1080p.
+
+**Processing Slowdown Over Time:**
+*   This is caused by memory fragmentation. Use `sequential` CPU offload, reduce the segment window size, and process in smaller batches.

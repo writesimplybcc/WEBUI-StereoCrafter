@@ -92,8 +92,6 @@ class InpaintingGUI(ThemedTk):
         self.video_name_var = tk.StringVar(value="N/A")
         self.video_res_var = tk.StringVar(value="N/A")
         self.video_frames_var = tk.StringVar(value="N/A")
-        self.video_overlap_var = tk.StringVar(value="N/A")
-        self.video_bias_var = tk.StringVar(value="N/A")
 
         self.mask_param_widgets = [] 
 
@@ -1464,10 +1462,32 @@ class InpaintingGUI(ThemedTk):
         # --- PROGRESS FRAME (no change) ---
         progress_frame = ttk.LabelFrame(self, text="Progress", padding=10)
         progress_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.status_label = ttk.Label(progress_frame, text="Ready")
+        self.status_label.pack(pady=(0, 5))
+
+        # Video Info inside Progress Frame
+        info_inner_frame = ttk.Frame(progress_frame)
+        info_inner_frame.pack(fill="x", pady=(0, 5))
+        
+        info_inner_frame.grid_columnconfigure(1, weight=1)
+        info_inner_frame.grid_columnconfigure(3, weight=1)
+        info_inner_frame.grid_columnconfigure(5, weight=1)
+
+        ttk.Label(info_inner_frame, text="Name:").grid(row=0, column=0, sticky="e", padx=(0, 2))
+        self.video_name_label = ttk.Label(info_inner_frame, textvariable=self.video_name_var, anchor="w")
+        self.video_name_label.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        
+        ttk.Label(info_inner_frame, text="Resolution:").grid(row=0, column=2, sticky="e", padx=(0, 2))
+        self.video_res_label = ttk.Label(info_inner_frame, textvariable=self.video_res_var, anchor="w")
+        self.video_res_label.grid(row=0, column=3, sticky="ew", padx=(0, 10))
+        
+        ttk.Label(info_inner_frame, text="Frames:").grid(row=0, column=4, sticky="e", padx=(0, 2))
+        self.video_frames_label = ttk.Label(info_inner_frame, textvariable=self.video_frames_var, anchor="w")
+        self.video_frames_label.grid(row=0, column=5, sticky="ew")
+
         self.progress_bar = ttk.Progressbar(progress_frame, length=400, mode='determinate')
         self.progress_bar.pack(fill="x")
-        self.status_label = ttk.Label(progress_frame, text="Ready")
-        self.status_label.pack(pady=5)
 
         # --- BUTTONS FRAME (no change) ---
         buttons_frame = ttk.Frame(self, padding=10)
@@ -1483,38 +1503,7 @@ class InpaintingGUI(ThemedTk):
         # ttk.Button(inner_buttons_frame, text="Help", command=self.show_general_help).pack(side="left", padx=5)
         ttk.Button(inner_buttons_frame, text="Exit", command=self.exit_application).pack(side="left", padx=5)
 
-        # --- INFO FRAME (no change) ---
-        self.info_frame = ttk.LabelFrame(self, text="Current Video Information", padding=10)
-        self.info_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.info_frame.grid_columnconfigure(0, weight=0)
-        self.info_frame.grid_columnconfigure(1, weight=1)
 
-        current_row = 0
-
-        ttk.Label(self.info_frame, text="Name:").grid(row=current_row, column=0, sticky="e", padx=(5, 2), pady=1)
-        self.video_name_label = ttk.Label(self.info_frame, textvariable=self.video_name_var, anchor="w")
-        self.video_name_label.grid(row=current_row, column=1, sticky="ew", padx=(2, 5), pady=1)
-        current_row += 1
-        
-        ttk.Label(self.info_frame, text="Resolution:").grid(row=current_row, column=0, sticky="e", padx=(5, 2), pady=1)
-        self.video_res_label = ttk.Label(self.info_frame, textvariable=self.video_res_var, anchor="w")
-        self.video_res_label.grid(row=current_row, column=1, sticky="ew", padx=(2, 5), pady=1)
-        current_row += 1
-        
-        ttk.Label(self.info_frame, text="Frames:").grid(row=current_row, column=0, sticky="e", padx=(5, 2), pady=1)
-        self.video_frames_label = ttk.Label(self.info_frame, textvariable=self.video_frames_var, anchor="w")
-        self.video_frames_label.grid(row=current_row, column=1, sticky="ew", padx=(2, 5), pady=1)
-        current_row += 1
-
-        ttk.Label(self.info_frame, text="Overlap:").grid(row=current_row, column=0, sticky="e", padx=(5, 2), pady=1)
-        self.video_overlap_label = ttk.Label(self.info_frame, textvariable=self.video_overlap_var, anchor="w")
-        self.video_overlap_label.grid(row=current_row, column=1, sticky="ew", padx=(2, 5), pady=1)
-        current_row += 1
-
-        ttk.Label(self.info_frame, text="Input Bias:").grid(row=current_row, column=0, sticky="e", padx=(5, 2), pady=1)
-        self.video_bias_label = ttk.Label(self.info_frame, textvariable=self.video_bias_var, anchor="w")
-        self.video_bias_label.grid(row=current_row, column=1, sticky="ew", padx=(2, 5), pady=1)
 
     def process_single_video(
         self,
@@ -2149,8 +2138,6 @@ class InpaintingGUI(ThemedTk):
         self.video_name_var.set(name)
         self.video_res_var.set(resolution)
         self.video_frames_var.set(frames)
-        self.video_overlap_var.set(overlap_val)
-        self.video_bias_var.set(bias_val)
 
     def load_config(self):
         try:

@@ -820,9 +820,13 @@ class InpaintingWebUI:
             with gr.Group():
                 gr.Markdown("### Progress")
                 status_label = gr.Textbox(label="Status", value="Ready", interactive=False)
+                with gr.Row():
+                    video_name = gr.Textbox(label="Name", value="N/A", interactive=False)
+                    video_res = gr.Textbox(label="Resolution", value="N/A", interactive=False)
+                    video_frames = gr.Textbox(label="Frames", value="N/A", interactive=False)
                 progress_bar = gr.Slider(
                     minimum=0, maximum=100, value=0,
-                    label="Progress (%)", interactive=False
+                    label="File Progress (%)", interactive=False
                 )
                 batch_progress = gr.Textbox(label="Batch Progress", value="0/0", interactive=False)
 
@@ -838,18 +842,6 @@ class InpaintingWebUI:
                 load_config_button = gr.Button("Load Config", variant="secondary")
                 reset_config_button = gr.Button("Reset to Defaults", variant="secondary")
             
-            # Current Video Information (Bottom)
-            with gr.Group():
-                gr.Markdown("### Current Video Information")
-                with gr.Row():
-                    video_name = gr.Textbox(label="Name", value="N/A", interactive=False)
-                    video_res = gr.Textbox(label="Resolution", value="N/A", interactive=False)
-                with gr.Row():
-                    video_frames = gr.Textbox(label="Frames", value="N/A", interactive=False)
-                    video_overlap = gr.Textbox(label="Overlap", value="N/A", interactive=False)
-                with gr.Row():
-                    video_bias = gr.Textbox(label="Input Bias", value="N/A", interactive=False)
-
 
 
             # ==================== EVENT HANDLERS ====================
@@ -887,8 +879,8 @@ class InpaintingWebUI:
             ]
             
             # All output components
-            all_outputs = [status_label, progress_bar, batch_progress, video_name, video_res,
-                          video_frames, video_overlap, video_bias, start_button, stop_button]
+            all_outputs = [status_label, progress_bar, batch_progress, video_name, video_res, 
+                          video_frames, start_button, stop_button]
 
             # Start processing
             start_button.click(
@@ -1049,8 +1041,6 @@ class InpaintingWebUI:
         last_video_name = "N/A"
         last_video_res = "N/A"
         last_video_frames = "N/A"
-        last_video_overlap = "N/A"
-        last_video_bias = "N/A"
 
         # No timeout - wait for processing to complete naturally
         # For very long videos, timeout would cause premature exit
@@ -1082,10 +1072,6 @@ class InpaintingWebUI:
                         last_video_res = msg_value
                     elif msg_type == "video_frames":
                         last_video_frames = msg_value
-                    elif msg_type == "video_overlap":
-                        last_video_overlap = msg_value
-                    elif msg_type == "video_bias":
-                        last_video_bias = msg_value
                 except:
                     break
             
@@ -1095,7 +1081,7 @@ class InpaintingWebUI:
                 
                 # Yield current state
                 yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
-                      last_video_frames, last_video_overlap, last_video_bias,
+                      last_video_frames,
                       gr.update(interactive=False), gr.update(interactive=True))
             
             time.sleep(0.1)  # Poll every 100ms
@@ -1116,15 +1102,11 @@ class InpaintingWebUI:
                     last_video_res = msg_value
                 elif msg_type == "video_frames":
                     last_video_frames = msg_value
-                elif msg_type == "video_overlap":
-                    last_video_overlap = msg_value
-                elif msg_type == "video_bias":
-                    last_video_bias = msg_value
             except:
                 break
         
         yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
-                last_video_frames, last_video_overlap, last_video_bias,
+                last_video_frames,
                 gr.update(interactive=True), gr.update(interactive=False))
 
     def stop_processing(self):
@@ -1135,7 +1117,7 @@ class InpaintingWebUI:
                 release_cuda_memory()
             except RuntimeError as e:
                 logger.warning(f"Failed to clear CUDA cache: {e}")
-        return ("⏹️ Stopping processing...", 0, "0/0", "N/A", "N/A", "N/A", "N/A", "N/A",
+        return ("⏹️ Stopping processing...", 0, "0/0", "N/A", "N/A", "N/A",
                 gr.update(interactive=True), gr.update(interactive=False))
 
     def process_batch(self, params):
@@ -1209,8 +1191,7 @@ class InpaintingWebUI:
                 self.progress_queue.put(("video_name", basename))
                 self.progress_queue.put(("video_res", "Loading..."))
                 self.progress_queue.put(("video_frames", "Loading..."))
-                self.progress_queue.put(("video_overlap", str(params['frame_overlap'])))
-                self.progress_queue.put(("video_bias", str(params['original_input_blend_strength'])))
+                self.progress_queue.put(("progress", 0))
 
                 success, hires_path = self.process_single_video(
                     pipeline=self.pipeline,
@@ -1238,8 +1219,6 @@ class InpaintingWebUI:
                 except Exception as e:
                     logger.warning(f"Failed to clear memory after video {idx + 1}: {e}")
 
-                progress = int(((idx + 1) / total_videos) * 100)
-                self.progress_queue.put(("progress", progress))
                 self.progress_queue.put(("batch_progress", f"{idx+1}/{total_videos}"))
 
             if self.stop_event.is_set():
@@ -1254,8 +1233,6 @@ class InpaintingWebUI:
             self.progress_queue.put(("video_name", "N/A"))
             self.progress_queue.put(("video_res", "N/A"))
             self.progress_queue.put(("video_frames", "N/A"))
-            self.progress_queue.put(("video_overlap", "N/A"))
-            self.progress_queue.put(("video_bias", "N/A"))
 
         except Exception as e:
             logger.exception(f"Error during batch processing: {e}")

@@ -2993,7 +2993,9 @@ class SplatterWebUI:
 
                 # Update progress
                 video_name = os.path.basename(video_path)
-                progress((idx / len(input_videos)), desc=f"Processing {idx+1}/{len(input_videos)}: {video_name}")
+                progress_val = (idx / len(input_videos))
+                progress(progress_val, desc=f"Processing {idx+1}/{len(input_videos)}: {video_name}")
+                yield f"Processing {idx+1}/{len(input_videos)}: {video_name}", int(progress_val * 100), gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
 
                 # Delegates all per-video work to the helper
                 tasks_processed, any_success = self._process_single_video_tasks(
@@ -3233,11 +3235,11 @@ class SplatterWebUI:
     def _get_auto_scaled_params(self, width: int) -> tuple[float, float, int]:
         """Returns auto-scaled (disparity, dilate_x, blur_x) based on video width."""
         if width > 3000:
-            return 90.0, 22.0, 37
+            return 20.0, 22.0, 37
         elif width >= 1900:
-            return 40.0, 10.0, 17
+            return 20.0, 10.0, 17
         elif width >= 1200:
-            return 30.0, 9.0, 16
+            return 20.0, 9.0, 16
         else:
             return 20.0, 8.0, 15
 
@@ -4456,10 +4458,12 @@ class SplatterWebUI:
         # 4. Start the processing thread
         self.stop_event.clear()
 
-        self._run_batch_process(settings)
-
-        # Processing completed synchronously
-        return "Processing started - check console for completion status", 50, gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
+        # Run the processing as generator
+        try:
+            for update in self._run_batch_process(settings):
+                yield update
+        except Exception as e:
+            yield f"Error during processing: {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=False)
 
     def stop_processing(self):
         """Sets the stop event to gracefully halt processing."""
