@@ -4632,14 +4632,14 @@ class SplatterWebUI:
                         gr.Markdown("### Depth Map Pre-processing")
                         with gr.Row():
                             self.depth_dilate_size_x_comp = gr.Slider(
-                                -10, 30, 
+                                -10, 50, 
                                 value=self.depth_dilate_size_x, 
                                 step=0.5, 
                                 label="Dilate X",
                                 info="Horizontal Dilate for the Depthhmask. Bilinear blending for decimals. 0 to disable. Below 0 applies erosion."
                             )
                             self.depth_dilate_size_y_comp = gr.Slider(
-                                -10, 30, 
+                                -10, 50, 
                                 value=self.depth_dilate_size_y, 
                                 step=0.5, 
                                 label="Y",
@@ -4648,14 +4648,14 @@ class SplatterWebUI:
                         
                         with gr.Row():
                             self.depth_blur_size_x_comp = gr.Slider(
-                                0, 35, 
+                                0, 60, 
                                 value=self.depth_blur_size_x, 
                                 step=1, 
                                 label="Blur X",
                                 info="Horizontal Blur for the Depth Mask."
                             )
                             self.depth_blur_size_y_comp = gr.Slider(
-                                0, 35, 
+                                0, 60, 
                                 value=self.depth_blur_size_y, 
                                 step=1, 
                                 label="Y",
