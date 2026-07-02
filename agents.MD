@@ -70,3 +70,7 @@ powershell -ExecutionPolicy Bypass -File dev-stop.ps1
 
 - Default working directory for AI operations: `WORKSPACE/` (or whatever `WORKING_DIR` points to).
 - Only modify root-level code (`src/`, `server/`, `cli/`) when explicitly asked.
+
+## GitHub Operations
+
+- **ALWAYS** ask for explicit user permission before committing and pushing code to GitHub.
