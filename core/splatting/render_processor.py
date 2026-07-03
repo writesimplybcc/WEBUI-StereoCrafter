@@ -655,10 +655,10 @@ class RenderProcessor:
         for j in range(len(batch_video_numpy)):
             results.append(
                 {
-                    "left": np.clip(left_cpu[j].transpose(1, 2, 0), 0.0, 1.0),
-                    "right": np.clip(right_cpu[j].transpose(1, 2, 0), 0.0, 1.0),
-                    "occlusion": np.clip(occl_cpu[j].transpose(1, 2, 0), 0.0, 1.0),
-                    "depth": np.clip(depth_cpu[j].transpose(1, 2, 0), 0.0, 1.0),
+                    "left": np.clip(np.nan_to_num(left_cpu[j].transpose(1, 2, 0), nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0),
+                    "right": np.clip(np.nan_to_num(right_cpu[j].transpose(1, 2, 0), nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0),
+                    "occlusion": np.clip(np.nan_to_num(occl_cpu[j].transpose(1, 2, 0), nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0),
+                    "depth": np.clip(np.nan_to_num(depth_cpu[j].transpose(1, 2, 0), nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0),
                 }
             )
         return results
