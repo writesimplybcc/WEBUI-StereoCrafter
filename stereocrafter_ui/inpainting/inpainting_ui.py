@@ -791,12 +791,12 @@ class InpaintingWebUI:
                 
                 with gr.Row():
                     mask_dilate_kernel_size = gr.Slider(
-                        minimum=0, maximum=50, value=float(self.app_config.get("mask_dilate_kernel_size", 5.0)),
+                        minimum=0, maximum=150, value=float(self.app_config.get("mask_dilate_kernel_size", 5.0)),
                         step=0.5, label="Mask Dilate Kernel",
                         info="Sets the size of the shape used to expand white areas in a mask, making objects larger and filling small gaps during dilation (e.g., 7, 15). Set to 0 to disable. This default value is based on the current input resolution."
                     )
                     mask_blur_kernel_size = gr.Slider(
-                        minimum=0, maximum=50, value=float(self.app_config.get("mask_blur_kernel_size", 10.0)),
+                        minimum=0, maximum=250, value=float(self.app_config.get("mask_blur_kernel_size", 10.0)),
                         step=0.5, label="Mask Blur Kernel",
                         info="Kernel size for Gaussian blur (e.g., 15, 25). Sigma is derived automatically. Set to 0 to disable. This default value is based on the current input resolution."
                     )
