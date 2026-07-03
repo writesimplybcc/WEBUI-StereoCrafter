@@ -432,6 +432,7 @@ Step 2: Splatting (2 min on RTX 4090)
 
 Step 3: Inpainting (5 min on RTX 4090)
   Input:  output_splatted/lowres/MyClip_1080_splatted4.mp4
+  Settings: Tile 1, Chunk 24, Overlap 6, Offload none
   Output: output_inpainted/MyClip_1080_inpainted_right_eye.mp4
 
 Step 4: Merging (1 min on RTX 4090)
@@ -444,22 +445,23 @@ Total Time: ~23 minutes
 
 ---
 
-## Full Pipeline Example (4K, 1-minute video, RTX 6000 Ada)
+## Full Pipeline Example (4K, 1-minute video, RTX 5090 / 32GB+ VRAM)
 
 ```
 Step 1: Depth Map (20 min)
   Input:  input_source_clips/MyClip_4K.mp4
-  Output: output_depthmaps/lowres/MyClip_4K_depth.mp4
+  Output: output_depthmaps/hires/MyClip_4K_depth.mp4
 
 Step 2: Splatting (5 min)
   Input:  input_source_clips/MyClip_4K.mp4
-          output_depthmaps/lowres/MyClip_4K_depth.mp4
-  Output: output_splatted/lowres/MyClip_4K_splatted4.mp4
+          output_depthmaps/hires/MyClip_4K_depth.mp4
+  Output: output_splatted/hires/MyClip_4K_splatted4.mp4
 
 Step 3: Inpainting (10 min)
-  Input:  output_splatted/lowres/MyClip_4K_splatted4.mp4
-  Settings: Tiles 4, Chunk 8, Overlap 3
-  Output: output_inpainted/MyClip_4K_inpainted_right_eye.mp4
+  Input:  output_splatted/hires/MyClip_4K_splatted4.mp4
+  Settings (32GB+ VRAM): Tile 4, Chunk 24, Overlap 6, Offload none
+  Settings (24GB VRAM): Tile 4, Chunk 10, Overlap 3, Offload model
+  Output: output_inpainted/hires/MyClip_4K_inpainted_right_eye.mp4
 
 Step 4: Merging (2 min)
   Input:  output_splatted/lowres/MyClip_4K_splatted4.mp4 (left eye)
