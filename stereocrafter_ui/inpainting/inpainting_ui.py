@@ -111,22 +111,20 @@ def load_inpainting_pipeline_hf(
 
         # Configure attention processors
         attention_set = False
-        if XFormersAttnProcessor is not None:
-            try:
-                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
-                logger.info("xFormers attention enabled for UNet")
-                attention_set = True
-            except Exception as e:
-                logger.warning(f"Failed to enable xFormers attention: {e}")
-                
-        if not attention_set and AttnProcessor2_0 is not None:
+        if AttnProcessor2_0 is not None:
             try:
                 pipeline.unet.set_attn_processor(AttnProcessor2_0())
                 logger.info("Efficient attention (AttnProcessor2_0) enabled for UNet")
                 attention_set = True
             except Exception as e:
                 logger.warning(f"Failed to enable AttnProcessor2_0: {e}")
-                
+        if not attention_set and XFormersAttnProcessor is not None:
+            try:
+                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
+                logger.info("xFormers attention enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable xFormers attention: {e}")
         if not attention_set:
             logger.info("Using default attention processor")
 
@@ -256,22 +254,20 @@ def load_inpainting_pipeline_local(
 
         # Configure attention processors
         attention_set = False
-        if XFormersAttnProcessor is not None:
-            try:
-                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
-                logger.info("xFormers attention enabled for UNet")
-                attention_set = True
-            except Exception as e:
-                logger.warning(f"Failed to enable xFormers attention: {e}")
-                
-        if not attention_set and AttnProcessor2_0 is not None:
+        if AttnProcessor2_0 is not None:
             try:
                 pipeline.unet.set_attn_processor(AttnProcessor2_0())
                 logger.info("Efficient attention (AttnProcessor2_0) enabled for UNet")
                 attention_set = True
             except Exception as e:
                 logger.warning(f"Failed to enable AttnProcessor2_0: {e}")
-                
+        if not attention_set and XFormersAttnProcessor is not None:
+            try:
+                pipeline.unet.set_attn_processor(XFormersAttnProcessor())
+                logger.info("xFormers attention enabled for UNet")
+                attention_set = True
+            except Exception as e:
+                logger.warning(f"Failed to enable xFormers attention: {e}")
         if not attention_set:
             logger.info("Using default attention processor")
 
