@@ -392,6 +392,11 @@ def spatial_tiled_process(
     # Calculate tile sizes and strides
     size_y = (height + overlap_y * (tile_num - 1)) // tile_num
     size_x = (width + overlap_x * (tile_num - 1)) // tile_num
+
+    # Force tile sizes to be multiples of spatial_n_compress (8) to prevent fractional dimension loss during VAE encode/decode
+    size_y = ((size_y + spatial_n_compress - 1) // spatial_n_compress) * spatial_n_compress
+    size_x = ((size_x + spatial_n_compress - 1) // spatial_n_compress) * spatial_n_compress
+
     tile_size = (size_y, size_x)
     tile_stride = (max(1, size_y - overlap_y), max(1, size_x - overlap_x))
 
@@ -1576,7 +1581,7 @@ class InpaintingWebUI:
             
             # --- Dimension Divisibility Check and Resizing (if needed) ---
             _, _, total_h_raw_input_before_resize, total_w_raw_input_before_resize = frames.shape
-            required_divisor = 8
+            required_divisor = 16
 
             new_h = total_h_raw_input_before_resize
             new_w = total_w_raw_input_before_resize
