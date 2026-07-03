@@ -628,8 +628,8 @@ class RenderProcessor:
 
         # Move to GPU
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        source_tensor = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).to(device, torch.float16) / 255.0
-        depth_tensor = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).to(device, torch.float16)
+        source_tensor = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).to(device, torch.float32) / 255.0
+        depth_tensor = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).to(device, torch.float32)
 
         from core.splatting.forward_warp import execute_forward_warp
 
