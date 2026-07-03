@@ -229,15 +229,29 @@ python inpainting_gui.py
 python webui.py  →  Inpainting tab
 ```
 
-### Workflow
-1. Select **Input Folder** (`./output_splatted/lowres` or `./output_splatted/hires`)
-2. Select **Output Folder** (defaults to `./output_inpainted`)
-3. Select **Hi-Res Blend Folder** (optional, for upscaling)
-4. Adjust settings (see below)
-5. Click **Start Processing**
+### Workflow Methods
+
+You can approach Inpainting using two different methods depending on your hardware and speed requirements:
+
+#### Method 1: Precise Inpainting (Native 4K)
+This method forces the AI to process the video natively at its original high resolution for maximum background quality.
+- **Input Folder:** Set to your high-resolution splatted folder (e.g., `./output_splatted/hires`).
+- **Hi-Res Blend Folder:** Leave this blank (or point it to the same hi-res folder).
+- *Note:* This is extremely VRAM intensive. If processing 4K, it requires a 24GB+ GPU and Tile 2 or Tile 4 to prevent Out-Of-Memory crashes.
+
+#### Method 2: Fast Inpainting (1080p AI + 4K Blend)
+This is the **default and recommended workflow** for massive speed boosts. The AI generates the missing background quickly at 1080p (low VRAM), and then the script seamlessly scales and stitches that tiny 1080p AI patch back into the pristine 4K video.
+- **Input Folder:** Set to your low-resolution splatted folder (e.g., `./output_splatted/lowres`).
+- **Hi-Res Blend Folder:** Set to your high-resolution splatted folder (e.g., `./output_splatted/hires`).
+
+### Steps to Run
+1. Configure your folders based on **Method 1** or **Method 2** above.
+2. Click **Read Input Resolution**. The UI will automatically detect your GPU's VRAM and the video resolution, and lock in the absolute fastest and safest settings (Tiling, Chunk Size, Offload) to prevent crashes.
+3. Click **Start Processing**
 
 ### Output Files
 - `MyClip_1920_inpainted_right_eye.mp4` — Inpainted stereo video
+- (Or Side-by-Side 4K-4K output depending on the splatted input)
 
 ---
 

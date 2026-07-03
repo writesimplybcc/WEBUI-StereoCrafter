@@ -507,13 +507,12 @@ class InpaintingWebUI:
         self.pipeline = None
 
     def read_input_resolution(self, input_folder):
-        """Scan the input folder, read the first splatted video, and auto-adjust mask kernel defaults."""
+        """Scan the input folder, read the first splatted video, and auto-adjust VRAM settings based on resolution."""
         try:
             if not os.path.isdir(input_folder):
                 return (
                     gr.update(value="❌ Input folder does not exist"),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(), gr.update(), gr.update(), gr.update(),
                     gr.update(value="N/A"),
                 )
 
@@ -525,8 +524,7 @@ class InpaintingWebUI:
             if not splatted:
                 return (
                     gr.update(value="⚠️ No splatted videos found in folder"),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(), gr.update(), gr.update(), gr.update(),
                     gr.update(value="N/A"),
                 )
 
@@ -535,32 +533,62 @@ class InpaintingWebUI:
                 first_video, process_length=1
             )
 
-            REFERENCE_WIDTH_FOR_DEFAULTS = 640
-            DEFAULT_DILATE_AT_REF = 5
-            DEFAULT_BLUR_AT_REF = 10
-            scale_factor = orig_w / REFERENCE_WIDTH_FOR_DEFAULTS
-            scaled_dilate = max(1, int(round(DEFAULT_DILATE_AT_REF * scale_factor)))
-            scaled_blur = max(3, int(round(DEFAULT_BLUR_AT_REF * scale_factor)))
+            from dependency.stereocrafter_util import get_gpu_memory_info
+            gpu_info = get_gpu_memory_info()
+            total_dedicated_gb = gpu_info.get('total_dedicated_gb', 0)
+            
+            # Default fallback values
+            new_tile = 1
+            new_chunk = 10
+            new_offload = 'model'
+            new_steps = 5
+            
+            # Logic for 4K (width >= 3000)
+            if orig_w >= 3000:
+                if total_dedicated_gb >= 30:
+                    # 32GB+ RTX 5090 / 6000 Ada -> Max Speed
+                    new_tile = 2
+                    new_chunk = 24
+                    new_offload = 'none'
+                elif total_dedicated_gb >= 20:
+                    # 24GB RTX 3090 / 4090 -> Balanced
+                    new_tile = 4
+                    new_chunk = 24
+                    new_offload = 'model'
+                else:
+                    # < 20GB -> Max Safety
+                    new_tile = 4
+                    new_chunk = 10
+                    new_offload = 'model'
+            else:
+                # Logic for 1080p (width < 3000)
+                new_tile = 1
+                if total_dedicated_gb >= 12:
+                    new_chunk = 24
+                    new_offload = 'none'
+                else:
+                    new_chunk = 10
+                    new_offload = 'model'
 
-            res_str = f"{orig_w}x{orig_h} original | inpainting width: {orig_w // 2}px (scale={scale_factor:.2f})"
-
+            res_str = f"{orig_w}x{orig_h} original | inpainting width: {orig_w // 2}px"
             status_msg = (
-                f"✓ Read {os.path.basename(first_video)}: {orig_w}x{orig_h} → "
-                f"auto-adjusted Dilate={scaled_dilate}, Blur={scaled_blur}"
+                f"✓ Detected {orig_w}x{orig_h} ({total_dedicated_gb:.1f}GB VRAM): "
+                f"Applied Tile {new_tile}, Chunk {new_chunk}, Offload {new_offload}, Steps {new_steps}"
             )
 
             return (
                 gr.update(value=status_msg),
-                gr.update(value=float(scaled_dilate)),
-                gr.update(value=float(scaled_blur)),
+                gr.update(value=new_tile),
+                gr.update(value=new_chunk),
+                gr.update(value=new_offload),
+                gr.update(value=new_steps),
                 gr.update(value=res_str),
             )
         except Exception as e:
             logger.error(f"Failed to read input resolution: {e}", exc_info=True)
             return (
                 gr.update(value=f"❌ Error: {e}"),
-                gr.update(),
-                gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(),
                 gr.update(value="Error"),
             )
 
@@ -685,7 +713,18 @@ class InpaintingWebUI:
     def create_interface(self, hf_token=None):
         """Create the complete Gradio interface"""
         
-        with gr.Blocks(title="Inpainting - StereoCrafter") as interface:
+        custom_css = """
+        #read-res-btn {
+            background-color: #ff9900 !important;
+            color: white !important;
+            border: none;
+        }
+        #read-res-btn:hover {
+            background-color: #e68a00 !important;
+        }
+        """
+        
+        with gr.Blocks(title="Inpainting - StereoCrafter", css=custom_css) as interface:
             gr.Markdown("## 🎨 Stereocrafter Inpainting (Batch)")
             
             # Folders Section (Top)
@@ -697,7 +736,14 @@ class InpaintingWebUI:
                         value=self.app_config.get("input_folder", "./output_splatted/lowres"),
                         info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
                     )
-                    read_res_button = gr.Button("Read Input Resolution", variant="secondary")
+                    read_res_button = gr.Button("Read Input Resolution", elem_id="read-res-btn")
+                
+                gr.Markdown(
+                    "**Only press this button after you've set your Input Folder.**\n\n"
+                    "**Method 1 (Precise Inpainting)**: Requires ONLY the hi-res splat files. Change 'Input Folder' to your hi-res folder, and leave 'Hi-Res Blend Folder' empty. Maximum quality, native 4K processing.\n\n"
+                    "**Method 2 (Fast Inpainting)**: (Default) Requires BOTH folders. Set 'Input Folder' to lowres and 'Hi-Res Blend Folder' to hires. AI processes at 1080p for massive speed, then stitches into 4K."
+                )
+
                 with gr.Row():
                     hires_blend_folder = gr.Textbox(
                         label="Hi-Res Blend Folder",
@@ -866,11 +912,11 @@ class InpaintingWebUI:
                 outputs=[mask_initial_threshold, mask_morph_kernel_size, mask_dilate_kernel_size, mask_blur_kernel_size]
             )
             
-            # Read input resolution and auto-adjust mask kernels
+            # Read input resolution and auto-adjust for VRAM and speed
             read_res_button.click(
                 fn=self.read_input_resolution,
                 inputs=[input_folder],
-                outputs=[status_label, mask_dilate_kernel_size, mask_blur_kernel_size, input_res_display]
+                outputs=[status_label, tile_num, frames_chunk, offload_type, num_inference_steps, input_res_display]
             )
             
             # Collect all parameters
@@ -1637,31 +1683,6 @@ class InpaintingWebUI:
             if left_frames is not None:
                 left_frames = left_frames.float() / 255.0
             
-            # --- Resolution-Based Auto-Scaling for Mask Kernel Sizes ---
-            # Reference: 640px inpainting width produces the original defaults (dilate=5, blur=10).
-            # Scale proportionally so masks cover the same relative seam width at any resolution.
-            REFERENCE_WIDTH_FOR_DEFAULTS = 640
-            DEFAULT_DILATE_AT_REF = 5
-            DEFAULT_BLUR_AT_REF = 10
-            inpainting_area_width = mask_frames.shape[3]
-            scale_factor = inpainting_area_width / REFERENCE_WIDTH_FOR_DEFAULTS
-            scaled_dilate = int(round(DEFAULT_DILATE_AT_REF * scale_factor))
-            scaled_blur = int(round(DEFAULT_BLUR_AT_REF * scale_factor))
-            if scale_factor > 1.05:
-                logger.warning(f"[WEBUI] Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
-                               f"(scale={scale_factor:.2f}): dilate {mask_params['mask_dilate_kernel_size']} -> {scaled_dilate}, "
-                               f"blur {mask_params['mask_blur_kernel_size']} -> {scaled_blur}. This default value is based on the current input resolution.")
-                mask_params = {**mask_params, 'mask_dilate_kernel_size': scaled_dilate, 'mask_blur_kernel_size': scaled_blur}
-            elif scale_factor < 0.95:
-                logger.warning(f"[WEBUI] Auto-scaling mask kernels for {inpainting_area_width}px inpainting width "
-                               f"(scale={scale_factor:.2f}): dilate {mask_params['mask_dilate_kernel_size']} -> {scaled_dilate}, "
-                               f"blur {mask_params['mask_blur_kernel_size']} -> {scaled_blur}. This default value is based on the current input resolution.")
-                mask_params = {**mask_params, 'mask_dilate_kernel_size': scaled_dilate, 'mask_blur_kernel_size': scaled_blur}
-            else:
-                logger.info(f"[WEBUI] Keeping stored mask kernel values (inpainting width {inpainting_area_width}px is within 5% of reference). "
-                            f"This default value is based on the current input resolution.")
-            # --- End Auto-Scaling ---
-            
             # Mask Processing (Binarize, Dilate, Blur)
             # Convert to grayscale using OpenCV (matches GUI method exactly)
             processed_masks_grayscale = []
@@ -1865,122 +1886,92 @@ class InpaintingWebUI:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            # --- Color Transfer ---
-            if params['enable_color_transfer']:
-                reference_frames = None
-                # frames_warpped_original_unpadded is uint8 if no hires, float 0-1 if hires
-                # frames_left_original_cropped is uint8 if no hires, float 0-1 if hires
-                # Need to ensure they are float 0-1 for color transfer
-                warped_for_ct = frames_warpped_original_unpadded.float() / 255.0 if frames_warpped_original_unpadded.dtype == torch.uint8 else frames_warpped_original_unpadded
-                left_for_ct = frames_left_original_cropped.float() / 255.0 if frames_left_original_cropped is not None and frames_left_original_cropped.dtype == torch.uint8 else frames_left_original_cropped
-
-                if is_dual_input:
-                    # Create occlusion-free reference from warped frames
-                    warped_frames_base = warped_for_ct.cpu()
-                    processed_mask = frames_mask_processed.cpu()
-                    reference_frames = self._apply_directional_dilation(
-                        frame_chunk=warped_frames_base, mask_chunk=processed_mask
-                    ).to(frames_output_final.device)
-                else:
-                    reference_frames = left_for_ct
-
-                if reference_frames is not None:
-                    # Apply color transfer to all frames - OPTIMIZED BATCH VERSION
-                    target_H, target_W = frames_output_final.shape[2], frames_output_final.shape[3]
-                    
-                    # Resize all reference frames at once (batch interpolate)
-                    ref_frames_resized = F.interpolate(
-                        reference_frames,
-                        size=(target_H, target_W),
-                        mode='bilinear', align_corners=False
-                    )
-                    
-                    # Convert to numpy once for entire batch - MINIMIZE CPU TRANSFERS
-                    # Keep on GPU as long as possible, then single transfer
-                    ref_np = ref_frames_resized.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C]
-                    target_np = frames_output_final.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C]
-                    
-                    # Scale to uint8
-                    ref_np_uint8 = np.clip(ref_np * 255, 0, 255).astype(np.uint8)
-                    target_np_uint8 = np.clip(target_np * 255, 0, 255).astype(np.uint8)
-                    
-                    # Batch color transfer - OpenCV operations must be per-frame but minimize overhead
-                    # Pre-allocate output array
-                    adjusted_frames = np.empty_like(ref_np_uint8)
-                    
-                    for t in range(ref_np_uint8.shape[0]):
-                        # Convert to LAB (OpenCV required)
-                        ref_lab = cv2.cvtColor(ref_np_uint8[t], cv2.COLOR_RGB2LAB)
-                        target_lab = cv2.cvtColor(target_np_uint8[t], cv2.COLOR_RGB2LAB)
-                        
-                        # Compute statistics (fast)
-                        src_mean, src_std = cv2.meanStdDev(ref_lab)
-                        tgt_mean, tgt_std = cv2.meanStdDev(target_lab)
-                        
-                        src_mean, src_std = src_mean.flatten(), src_std.flatten()
-                        tgt_mean, tgt_std = tgt_mean.flatten(), tgt_std.flatten()
-                        
-                        # Avoid division by zero
-                        src_std = np.clip(src_std, 1e-6, None)
-                        tgt_std = np.clip(tgt_std, 1e-6, None)
-                        
-                        # Apply color transfer formula (vectorized per-channel)
-                        target_lab_float = target_lab.astype(np.float32)
-                        for i in range(3):
-                            target_lab_float[:, :, i] = (target_lab_float[:, :, i] - tgt_mean[i]) / tgt_std[i] * src_std[i] + src_mean[i]
-                        
-                        # Clip and convert back
-                        target_lab_uint8 = np.clip(target_lab_float, 0, 255).astype(np.uint8)
-                        adjusted_frames[t] = cv2.cvtColor(target_lab_uint8, cv2.COLOR_LAB2RGB)
-                    
-                    # Convert back to tensor - SINGLE GPU TRANSFER
-                    frames_output_final = torch.from_numpy(adjusted_frames).permute(0, 3, 1, 2).float() / 255.0
-
-            # --- Normalization using same logic as GUI ---
-            # frames_warpped_original_unpadded (from _prepare_video_inputs) is uint8 0-255 if no hires.
-            # If hires was enabled, it's already float 0-1.
-            # Ensure it's float 0-1 for blending.
-            frames_warpped_original_unpadded_normalized = frames_warpped_original_unpadded.float() / 255.0 if frames_warpped_original_unpadded.dtype == torch.uint8 else frames_warpped_original_unpadded
-            
-            # frames_left_original_cropped also needs to be normalized if it was taken from frames
-            if frames_left_original_cropped is not None:
-                frames_left_original_cropped_normalized = frames_left_original_cropped.float() / 255.0 if frames_left_original_cropped.dtype == torch.uint8 else frames_left_original_cropped
-            else:
-                frames_left_original_cropped_normalized = None
-
-            # --- Note: frames_mask_padded is derived from processed_masks_grayscale which is already float 0-1 ---
-            
-            # --- Post-Inpainting Blend ---
-            if params['enable_post_inpainting_blend']:
-                # Blend: original * (1 - mask) + inpainted * mask
-                # OPTIMIZED: Keep on GPU as long as possible
-                mask_gpu = frames_mask_processed
-                if mask_gpu.shape[1] != 1: 
-                    mask_gpu = mask_gpu.mean(dim=1, keepdim=True)
-
-                # original_warpped is uint8, normalize to float 0-1
-                original_gpu = frames_warpped_original_unpadded.float() / 255.0 if frames_warpped_original_unpadded.dtype == torch.uint8 else frames_warpped_original_unpadded
+            # --- VRAM OPTIMIZATION: Chunked processing for Finalization ---
+            # Moves massive 4K tensor to CPU and processes in 10-frame chunks
+            frames_output_final_cpu = frames_output_final.cpu()
+            del frames_output_final
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
                 
-                # Check shapes match
-                if frames_output_final.shape == original_gpu.shape:
-                    blended = original_gpu * (1 - mask_gpu) + frames_output_final * mask_gpu
-                    frames_output_final = blended  # Already on GPU!
+            chunk_size = 10
+            num_frames = frames_output_final_cpu.shape[0]
+            final_chunks = []
+            
+            for i in range(0, num_frames, chunk_size):
+                end_i = min(i + chunk_size, num_frames)
+                
+                # All processing stays on CPU to save VRAM (Color Transfer requires CPU anyway)
+                chunk_output = frames_output_final_cpu[i:end_i]
+                
+                # --- Color Transfer ---
+                if params['enable_color_transfer']:
+                    warped_for_ct = frames_warpped_original_unpadded[i:end_i].float() / 255.0 if frames_warpped_original_unpadded.dtype == torch.uint8 else frames_warpped_original_unpadded[i:end_i]
+                    if frames_left_original_cropped is not None:
+                        left_for_ct = frames_left_original_cropped[i:end_i].float() / 255.0 if frames_left_original_cropped.dtype == torch.uint8 else frames_left_original_cropped[i:end_i]
+                    else:
+                        left_for_ct = None
 
-            # --- Final Concatenation ---
-            if is_dual_input:
-                return frames_output_final
-            else:
-                if frames_left_original_cropped_normalized is not None:
-                    # Resize left to match output if needed
-                    # Note: We use the NORMALIZED version here
-                    if frames_left_original_cropped_normalized.shape[-2:] != frames_output_final.shape[-2:]:
-                        frames_left_original_cropped_normalized = F.interpolate(
-                            frames_left_original_cropped_normalized, 
-                            size=frames_output_final.shape[-2:], 
-                            mode='bilinear',
-                            align_corners=False # Explicitly set align_corners for safety
+                    if is_dual_input:
+                        warped_frames_base = warped_for_ct.cpu()
+                        processed_mask = frames_mask_processed[i:end_i].cpu()
+                        chunk_reference = self._apply_directional_dilation(
+                            frame_chunk=warped_frames_base, mask_chunk=processed_mask
                         )
-                    return torch.cat([frames_left_original_cropped_normalized, frames_output_final], dim=3)
+                    else:
+                        chunk_reference = left_for_ct.cpu() if left_for_ct is not None else None
+
+                    if chunk_reference is not None:
+                        target_H, target_W = chunk_output.shape[2], chunk_output.shape[3]
+                        ref_resized = F.interpolate(chunk_reference, size=(target_H, target_W), mode='bilinear', align_corners=False)
+                        
+                        ref_np = ref_resized.permute(0, 2, 3, 1).numpy()
+                        tgt_np = chunk_output.permute(0, 2, 3, 1).numpy()
+                        
+                        ref_np_uint8 = np.clip(ref_np * 255, 0, 255).astype(np.uint8)
+                        tgt_np_uint8 = np.clip(tgt_np * 255, 0, 255).astype(np.uint8)
+                        adjusted = np.empty_like(ref_np_uint8)
+                        
+                        for t in range(ref_np_uint8.shape[0]):
+                            ref_lab = cv2.cvtColor(ref_np_uint8[t], cv2.COLOR_RGB2LAB)
+                            tgt_lab = cv2.cvtColor(tgt_np_uint8[t], cv2.COLOR_RGB2LAB)
+                            s_m, s_s = cv2.meanStdDev(ref_lab)
+                            t_m, t_s = cv2.meanStdDev(tgt_lab)
+                            s_m, s_s = s_m.flatten(), s_s.flatten()
+                            t_m, t_s = t_m.flatten(), t_s.flatten()
+                            s_s = np.clip(s_s, 1e-6, None)
+                            t_s = np.clip(t_s, 1e-6, None)
+                            tgt_lab_f = tgt_lab.astype(np.float32)
+                            for c in range(3):
+                                tgt_lab_f[:, :, c] = (tgt_lab_f[:, :, c] - t_m[c]) / t_s[c] * s_s[c] + s_m[c]
+                            tgt_lab_u = np.clip(tgt_lab_f, 0, 255).astype(np.uint8)
+                            adjusted[t] = cv2.cvtColor(tgt_lab_u, cv2.COLOR_LAB2RGB)
+                            
+                        chunk_output = torch.from_numpy(adjusted).permute(0, 3, 1, 2).float() / 255.0
+
+                # --- Post-Inpainting Blend ---
+                if params['enable_post_inpainting_blend']:
+                    chunk_mask_cpu = frames_mask_processed[i:end_i].cpu()
+                    if chunk_mask_cpu.shape[1] != 1: 
+                        chunk_mask_cpu = chunk_mask_cpu.mean(dim=1, keepdim=True)
+
+                    chunk_orig = frames_warpped_original_unpadded[i:end_i].cpu()
+                    chunk_orig_cpu = chunk_orig.float() / 255.0 if chunk_orig.dtype == torch.uint8 else chunk_orig
+                    
+                    if chunk_output.shape == chunk_orig_cpu.shape:
+                        chunk_output = chunk_orig_cpu * (1 - chunk_mask_cpu) + chunk_output * chunk_mask_cpu
+
+                # --- Final Concatenation ---
+                if not is_dual_input:
+                    if frames_left_original_cropped is not None:
+                        chunk_left = frames_left_original_cropped[i:end_i].cpu()
+                        chunk_left_norm = chunk_left.float() / 255.0 if chunk_left.dtype == torch.uint8 else chunk_left
+                        if chunk_left_norm.shape[-2:] != chunk_output.shape[-2:]:
+                            chunk_left_norm = F.interpolate(chunk_left_norm, size=chunk_output.shape[-2:], mode='bilinear', align_corners=False)
+                        chunk_output = torch.cat([chunk_left_norm, chunk_output], dim=3)
+                        
+                final_chunks.append(chunk_output)
+                
+            return torch.cat(final_chunks, dim=0)
 
             return None
 
