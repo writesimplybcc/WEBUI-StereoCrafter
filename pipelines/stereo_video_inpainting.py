@@ -280,8 +280,18 @@ class StableVideoDiffusionInpaintingPipeline(DiffusionPipeline):
                 decode_kwargs["num_frames"] = num_frames_in
 
             frame = self.vae.decode(latents[i : i + decode_chunk_size], **decode_kwargs).sample
-            frames.append(frame)
+            # Move frame to CPU immediately to prevent VRAM buildup during long chunk decoding
+            frames.append(frame.cpu())
+            # Aggressive VRAM cleanup after each frame decode to prevent fragmentation
+            import gc
+            del frame
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+        # Concatenate frames on CPU to save VRAM, then move back to GPU if needed
         frames = torch.cat(frames, dim=0)
+        # Move back to original device (usually CUDA) since the rest of the pipeline expects it
+        frames = frames.to(latents.device)
 
         # [batch*frames, channels, height, width] -> [batch, channels, frames, height, width]
         frames = frames.reshape(-1, num_frames, *frames.shape[1:]).permute(0, 2, 1, 3, 4)
