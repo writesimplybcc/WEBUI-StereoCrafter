@@ -740,9 +740,9 @@ class InpaintingWebUI:
                                 info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (auto-detected based on GPU VRAM)"
                             )
                         tile_num = gr.Slider(
-                            minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 1)),
+                            minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 4)),
                             step=1, label="Tile Number",
-                            info="Number of spatial tiles (e.g., 2 means 2x2 grid) to split each video frame into. Useful for processing high-resolution videos with limited GPU memory. Set to 1 to disable tiling. Default: 1"
+                            info="Number of spatial tiles (e.g., 4 means 4x4 grid) to split each video frame into. High resolution (4K) requires 4. Set to 1 to disable tiling. Default: 4"
                         )
                         frames_chunk = gr.Slider(
                             minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", self.vram_defaults['frames_chunk'])),
@@ -774,9 +774,9 @@ class InpaintingWebUI:
                         )
                         offload_type = gr.Dropdown(
                             choices=["none", "model", "sequential", "shared_memory"],
-                            value=self.app_config.get("offload_type", "none"),
+                            value=self.app_config.get("offload_type", "model"),
                             label="CPU Offload Type",
-                            info="Determines how parts of the model are moved to CPU memory. 'none' keeps everything on GPU (fastest, recommended for 12GB+ VRAM). 'model' offloads components between steps (balanced, for 8-12GB). 'sequential' offloads layers one-by-one (slowest, for <8GB). 'shared_memory' experimental mode for systems with shared GPU memory (RAM higher than 32GB)."
+                            info="Determines how parts of the model are moved to CPU memory. 'model' offloads components between steps (balanced, default). 'none' keeps everything on GPU (fastest, for 48GB+ VRAM). 'sequential' offloads layers one-by-one (slowest, for <8GB). 'shared_memory' experimental mode for systems with shared GPU memory (RAM higher than 32GB)."
                         )
             
             # Mask Processing Section
