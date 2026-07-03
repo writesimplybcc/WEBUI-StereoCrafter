@@ -459,7 +459,7 @@ Step 2: Splatting (5 min)
 
 Step 3: Inpainting (10 min)
   Input:  output_splatted/hires/MyClip_4K_splatted4.mp4
-  Settings (32GB+ VRAM): Tile 4, Chunk 24, Overlap 6, Offload none
+  Settings (32GB+ VRAM): Tile 4, Chunk 24, Overlap 6, Offload model
   Settings (24GB VRAM): Tile 4, Chunk 10, Overlap 3, Offload model
   Output: output_inpainted/hires/MyClip_4K_inpainted_right_eye.mp4
 
