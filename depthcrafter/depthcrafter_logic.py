@@ -786,6 +786,34 @@ class DepthCrafterDemo:
 
             save_video(res_normalized_for_mp4, full_save_path, fps=save_video_fps_full, output_format=output_format_for_full_video)
             _logger.debug(f"Successfully saved: {full_save_path}")
+
+            # --- SECOND OUTPUT (if enabled): Robust Global Normalization & Save ---
+            if job_specific_metadata.get("enable_dual_output_robust_norm", False):
+                _logger.info("Generating robustly normalized (secondary) output for Full Video...")
+                try:
+                    from depthcrafter.merge_depth_segments import _apply_robust_global_normalization
+                    robust_normalized_video = _apply_robust_global_normalization(
+                        res, # Use original unclipped data
+                        job_specific_metadata.get("robust_norm_low_percentile", 0.0),
+                        job_specific_metadata.get("robust_norm_high_percentile", 75.5),
+                        job_specific_metadata.get("robust_norm_output_min", 0.0),
+                        job_specific_metadata.get("robust_norm_output_max", 1.0),
+                        job_specific_metadata.get("is_depth_far_black", True)
+                    )
+                    robust_suffix = job_specific_metadata.get("robust_output_suffix", "_robust")
+                    
+                    # Construct robust path
+                    base_dir = os.path.dirname(full_save_path)
+                    filename = os.path.basename(full_save_path)
+                    name_part, ext_part = os.path.splitext(filename)
+                    robust_filename = f"{name_part}{robust_suffix}{ext_part}"
+                    robust_full_save_path = os.path.join(base_dir, robust_filename)
+                    
+                    save_video(robust_normalized_video, robust_full_save_path, fps=save_video_fps_full, output_format=output_format_for_full_video)
+                    _logger.debug(f"Successfully saved robust secondary output: {robust_full_save_path}")
+                except Exception as e_robust:
+                    _logger.error(f"Failed to save robust secondary output. Reason: {e_robust}")
+
             return True
         except Exception as e_save_mp4:
             _logger.error(f"Failed to save: {full_save_path}. Reason: Full video MP4 save error: {e_save_mp4}")
@@ -840,7 +868,14 @@ class DepthCrafterDemo:
                         should_save_intermediate_visuals: bool = False,
                         intermediate_visual_format_to_save: str = "none",
                         save_final_output_json_config_passed_in: bool = False,
-                        enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
+                        enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128,
+                        enable_dual_output_robust_norm: bool = False,
+                        robust_norm_low_percentile: float = 0.0,
+                        robust_norm_high_percentile: float = 75.5,
+                        robust_norm_output_min: float = 0.0,
+                        robust_norm_output_max: float = 1.0,
+                        robust_output_suffix: str = "_robust",
+                        is_depth_far_black: bool = True
                         ) -> Tuple[Optional[str], dict]:
 
         infer_start_time = time.perf_counter()
@@ -856,6 +891,16 @@ class DepthCrafterDemo:
             segment_job_info, output_filename_for_meta,
             pipe_call_window_size, pipe_call_overlap, original_video_basename
         )
+        
+        job_specific_metadata.update({
+            "enable_dual_output_robust_norm": enable_dual_output_robust_norm,
+            "robust_norm_low_percentile": robust_norm_low_percentile,
+            "robust_norm_high_percentile": robust_norm_high_percentile,
+            "robust_norm_output_min": robust_norm_output_min,
+            "robust_norm_output_max": robust_norm_output_max,
+            "robust_output_suffix": robust_output_suffix,
+            "is_depth_far_black": is_depth_far_black
+        })
 
         actual_frames_to_process, actual_fps_for_save, actual_processed_h, actual_processed_w, effective_vram = self._load_frames(
             video_path_or_job_info=video_path_or_job_info_dict,
@@ -946,7 +991,14 @@ class DepthCrafterDemo:
             keep_intermediate_npz_config: bool = False,
             intermediate_segment_visual_format_config: str = "none",
             save_final_json_for_this_job_config: bool = False,
-            enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128
+            enable_tiling: bool = False, tile_size: int = 512, tile_overlap: int = 128,
+            enable_dual_output_robust_norm: bool = False,
+            robust_norm_low_percentile: float = 0.0,
+            robust_norm_high_percentile: float = 75.5,
+            robust_norm_output_min: float = 0.0,
+            robust_norm_output_max: float = 1.0,
+            robust_output_suffix: str = "_robust",
+            is_depth_far_black: bool = True
             ):
         
         video_path_or_info_for_infer_load: Union[str, dict]
@@ -1024,7 +1076,14 @@ class DepthCrafterDemo:
             should_save_intermediate_visuals=should_save_visuals_for_infer,
             intermediate_visual_format_to_save=intermediate_visual_fmt_for_infer,
             save_final_output_json_config_passed_in=save_final_json_for_this_job_config,
-            enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap
+            enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap,
+            enable_dual_output_robust_norm=enable_dual_output_robust_norm,
+            robust_norm_low_percentile=robust_norm_low_percentile,
+            robust_norm_high_percentile=robust_norm_high_percentile,
+            robust_norm_output_min=robust_norm_output_min,
+            robust_norm_output_max=robust_norm_output_max,
+            robust_output_suffix=robust_output_suffix,
+            is_depth_far_black=is_depth_far_black
         )
         gc.collect(); torch.cuda.empty_cache()
         return save_path, job_metadata_dict

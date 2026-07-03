@@ -965,7 +965,14 @@ class DepthCrafterWebUI(BaseWebUI):
                         keep_intermediate_npz_config=keep_intermediate_npz,
                         intermediate_segment_visual_format_config=keep_intermediate_segment_visual_format,
                         save_final_json_for_this_job_config=save_final_json,
-                        enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap
+                        enable_tiling=enable_tiling, tile_size=tile_size, tile_overlap=tile_overlap,
+                        enable_dual_output_robust_norm=enable_dual_output_robust_norm,
+                        robust_norm_low_percentile=robust_norm_low_percentile,
+                        robust_norm_high_percentile=robust_norm_high_percentile,
+                        robust_norm_output_min=robust_norm_output_min,
+                        robust_norm_output_max=robust_norm_output_max,
+                        robust_output_suffix=robust_output_suffix,
+                        is_depth_far_black=is_depth_far_black
                     )
                     logger.info("Full video processing completed")
                 
