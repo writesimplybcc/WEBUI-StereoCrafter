@@ -74,8 +74,14 @@ python webui.py  →  DepthCrafter tab
 4. Click **Generate Depth Maps**
 
 ### Output Files
-- `MyClip_1920_depth.mp4` — Depth map video
+- `MyClip_1920_depth.mp4` — Primary depth map video
 - `MyClip_1920_depth_meta.json` — Metadata sidecar
+- `MyClip_1920_depth_robust.mp4` — (Optional) Secondary depth map using robust global normalization (if enabled)
+
+#### Secondary Output (Robust Normalization)
+If you check **Enable Secondary Output**, DepthCrafter will generate a second depth map file with a `_robust` suffix. 
+- **What it does:** It applies a percentile-based normalization to the raw depth data (ignoring extreme outliers), which can lead to a more stable and visually consistent depth map across time. 
+- **How to use it:** Use this feature if your primary depth map has flickering or extreme contrast shifts caused by single-pixel depth anomalies. You can take this `_robust` file into the Splatting step instead of the primary file.
 
 ---
 
