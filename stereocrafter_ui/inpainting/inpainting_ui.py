@@ -777,9 +777,9 @@ class InpaintingWebUI:
                                 info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (auto-detected based on GPU VRAM)"
                             )
                         tile_num = gr.Slider(
-                            minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 4)),
-                            step=1, label="Tile Number",
-                            info="Number of spatial tiles (e.g., 4 means 4x4 grid) to split each video frame into. High resolution (4K) requires 4. Set to 1 to disable tiling. Default: 4"
+                            minimum=1, maximum=10, value=float(self.app_config.get("tile_num", 1)),
+                            step=1, label="Tile Splits",
+                            info="Number of spatial tiles to split each video frame into. Set to 1 to disable tiling (HIGHLY RECOMMENDED). Values > 1 cause severe spatial smearing and seams. Default: 1"
                         )
                         frames_chunk = gr.Slider(
                             minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", self.vram_defaults['frames_chunk'])),
