@@ -728,11 +728,12 @@ class InpaintingWebUI:
                         )
                     with gr.Column(scale=2):
                         read_res_button = gr.Button("Read Input Resolution", elem_id="read-res-btn", variant="primary")
-                        gr.Markdown(
-                            "**Only press this button after you've set your Input Folder.**\n\n"
-                            "**Method 1 (Precise Inpainting)**: Requires ONLY the hi-res splat files. Change 'Input Folder' to your hi-res folder, and leave 'Hi-Res Blend Folder' empty. Maximum quality, native 4K processing.\n\n"
-                            "**Method 2 (Fast Inpainting)**: (Default) Requires BOTH folders. Set 'Input Folder' to lowres and 'Hi-Res Blend Folder' to hires. AI processes at 1080p for massive speed, then stitches into 4K."
-                        )
+                
+                gr.Markdown(
+                    "**Only press this button after you've set your Input Folder.**\n\n"
+                    "**Method 1 (Precise Inpainting)**: Requires ONLY the hi-res splat files. Change 'Input Folder' to your hi-res folder, and leave 'Hi-Res Blend Folder' empty. Maximum quality, native 4K processing.\n\n"
+                    "**Method 2 (Fast Inpainting)**: (Default) Requires BOTH folders. Set 'Input Folder' to lowres and 'Hi-Res Blend Folder' to hires. AI processes at 1080p for massive speed, then stitches into 4K."
+                )
 
                 with gr.Row():
                     hires_blend_folder = gr.Textbox(
@@ -927,7 +928,8 @@ class InpaintingWebUI:
             start_button.click(
                 fn=self.start_processing,
                 inputs=all_params,
-                outputs=all_outputs
+                outputs=all_outputs,
+                show_progress="hidden"
             )
 
             # Stop processing
