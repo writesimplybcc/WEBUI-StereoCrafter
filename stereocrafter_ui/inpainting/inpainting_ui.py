@@ -720,18 +720,19 @@ class InpaintingWebUI:
             with gr.Group():
                 gr.Markdown("### Folders")
                 with gr.Row():
-                    input_folder = gr.Textbox(
-                        label="Input Folder",
-                        value=self.app_config.get("input_folder", "./output_splatted/lowres"),
-                        info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
-                    )
-                    read_res_button = gr.Button("Read Input Resolution", variant="primary")
-                
-                gr.Markdown(
-                    "**Only press this button after you've set your Input Folder.**\n\n"
-                    "**Method 1 (Precise Inpainting)**: Requires ONLY the hi-res splat files. Change 'Input Folder' to your hi-res folder, and leave 'Hi-Res Blend Folder' empty. Maximum quality, native 4K processing.\n\n"
-                    "**Method 2 (Fast Inpainting)**: (Default) Requires BOTH folders. Set 'Input Folder' to lowres and 'Hi-Res Blend Folder' to hires. AI processes at 1080p for massive speed, then stitches into 4K."
-                )
+                    with gr.Column(scale=3):
+                        input_folder = gr.Textbox(
+                            label="Input Folder",
+                            value=self.app_config.get("input_folder", "./output_splatted/lowres"),
+                            info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
+                        )
+                    with gr.Column(scale=2):
+                        read_res_button = gr.Button("Read Input Resolution", elem_id="read-res-btn", variant="primary")
+                        gr.Markdown(
+                            "**Only press this button after you've set your Input Folder.**\n\n"
+                            "**Method 1 (Precise Inpainting)**: Requires ONLY the hi-res splat files. Change 'Input Folder' to your hi-res folder, and leave 'Hi-Res Blend Folder' empty. Maximum quality, native 4K processing.\n\n"
+                            "**Method 2 (Fast Inpainting)**: (Default) Requires BOTH folders. Set 'Input Folder' to lowres and 'Hi-Res Blend Folder' to hires. AI processes at 1080p for massive speed, then stitches into 4K."
+                        )
 
                 with gr.Row():
                     hires_blend_folder = gr.Textbox(
@@ -1826,6 +1827,13 @@ class InpaintingWebUI:
                         processed_masks.append(torch.from_numpy(binary_mask).unsqueeze(0).float() / 255.0)
                     return torch.stack(processed_masks, dim=0)
 
+                # Calculate scaling factor to ensure the mask parameters are proportional at 4K
+                input_W = frames_output_final.shape[3]
+                hires_scale = hires_W / input_W if input_W > 0 else 1.0
+                
+                scaled_dilate = max(0, int(round(params['mask_dilate_kernel_size'] * hires_scale)))
+                scaled_blur = max(0, int(round(params['mask_blur_kernel_size'] * hires_scale)))
+
                 # Process first chunk (already loaded)
                 inpainted_chunk = frames_output_final[:len(first_indices)].cpu()
                 inpainted_chunk_hires = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
@@ -1838,7 +1846,7 @@ class InpaintingWebUI:
                     hires_warped_chunk = first_hires_torch[:, :, warped_h:, warped_w:].float() / 255.0
                     hires_raw_mask = first_hires_torch[:, :, left_h:, :left_w].float() / 255.0
                 
-                mask_chunk_hires = process_hires_mask(hires_raw_mask, params['mask_dilate_kernel_size'], params['mask_blur_kernel_size'], params['mask_initial_threshold'])
+                mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'])
 
                 frames_output_final_hires[:len(first_indices)] = inpainted_chunk_hires
                 frames_mask_processed_hires[:len(first_indices)] = mask_chunk_hires
@@ -1872,7 +1880,7 @@ class InpaintingWebUI:
                         hires_warped_chunk = hires_frames_torch[:, :, warped_h:, warped_w:].float() / 255.0
                         hires_raw_mask = hires_frames_torch[:, :, left_h:, :left_w].float() / 255.0
 
-                    mask_chunk_hires = process_hires_mask(hires_raw_mask, params['mask_dilate_kernel_size'], params['mask_blur_kernel_size'], params['mask_initial_threshold'])
+                    mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'])
 
                     frames_output_final_hires[start_idx:end_idx] = inpainted_chunk_hires
                     frames_mask_processed_hires[start_idx:end_idx] = mask_chunk_hires
