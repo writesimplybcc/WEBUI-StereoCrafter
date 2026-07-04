@@ -713,18 +713,7 @@ class InpaintingWebUI:
     def create_interface(self, hf_token=None):
         """Create the complete Gradio interface"""
         
-        custom_css = """
-        #read-res-btn {
-            background-color: #ff9900 !important;
-            color: white !important;
-            border: none;
-        }
-        #read-res-btn:hover {
-            background-color: #e68a00 !important;
-        }
-        """
-        
-        with gr.Blocks(title="Inpainting - StereoCrafter", css=custom_css) as interface:
+        with gr.Blocks() as interface:
             gr.Markdown("## 🎨 Stereocrafter Inpainting (Batch)")
             
             # Folders Section (Top)
@@ -736,7 +725,7 @@ class InpaintingWebUI:
                         value=self.app_config.get("input_folder", "./output_splatted/lowres"),
                         info="Select the directory containing your input MP4 videos. The script expects '_splatted4' for quad inputs (Original, Depth, Mask, Warped) or '_splatted2' for dual inputs (Mask, Warped)."
                     )
-                    read_res_button = gr.Button("Read Input Resolution", elem_id="read-res-btn")
+                    read_res_button = gr.Button("Read Input Resolution", variant="primary")
                 
                 gr.Markdown(
                     "**Only press this button after you've set your Input Folder.**\n\n"
@@ -1810,17 +1799,46 @@ class InpaintingWebUI:
                         dtype=torch.float32, device='cpu'
                     )
 
+                def process_hires_mask(raw_mask_chunk, p_dilate, p_blur, p_thresh):
+                    import cv2
+                    import numpy as np
+                    processed_masks = []
+                    for t in range(raw_mask_chunk.shape[0]):
+                        mask_np = raw_mask_chunk[t].permute(1, 2, 0).numpy()
+                        mask_np_uint8 = np.clip(mask_np * 255, 0, 255).astype(np.uint8)
+                        
+                        if mask_np_uint8.shape[2] == 3:
+                            mask_gray = cv2.cvtColor(mask_np_uint8, cv2.COLOR_RGB2GRAY)
+                        else:
+                            mask_gray = mask_np_uint8.squeeze(-1)
+                            
+                        _, binary_mask = cv2.threshold(mask_gray, int(p_thresh * 255), 255, cv2.THRESH_BINARY)
+                        
+                        if p_dilate > 0:
+                            dilate_kernel = np.ones((int(p_dilate), int(p_dilate)), np.uint8)
+                            binary_mask = cv2.dilate(binary_mask, dilate_kernel, iterations=1)
+                            
+                        if p_blur > 0:
+                            blur_size = int(p_blur)
+                            if blur_size % 2 == 0: blur_size += 1
+                            binary_mask = cv2.GaussianBlur(binary_mask, (blur_size, blur_size), 0)
+                            
+                        processed_masks.append(torch.from_numpy(binary_mask).unsqueeze(0).float() / 255.0)
+                    return torch.stack(processed_masks, dim=0)
+
                 # Process first chunk (already loaded)
                 inpainted_chunk = frames_output_final[:len(first_indices)].cpu()
-                mask_chunk = frames_mask_processed[:len(first_indices)].cpu()
                 inpainted_chunk_hires = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
-                mask_chunk_hires = F.interpolate(mask_chunk, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
 
                 if is_dual_input:
-                    hires_warped_chunk = first_hires_torch.float() / 255.0
+                    hires_warped_chunk = first_hires_torch[:, :, :, left_w:].float() / 255.0
+                    hires_raw_mask = first_hires_torch[:, :, :, :left_w].float() / 255.0
                 else:
                     hires_left_chunk = first_hires_torch[:, :, :left_h, :left_w].float() / 255.0
                     hires_warped_chunk = first_hires_torch[:, :, warped_h:, warped_w:].float() / 255.0
+                    hires_raw_mask = first_hires_torch[:, :, left_h:, :left_w].float() / 255.0
+                
+                mask_chunk_hires = process_hires_mask(hires_raw_mask, params['mask_dilate_kernel_size'], params['mask_blur_kernel_size'], params['mask_initial_threshold'])
 
                 frames_output_final_hires[:len(first_indices)] = inpainted_chunk_hires
                 frames_mask_processed_hires[:len(first_indices)] = mask_chunk_hires
@@ -1828,7 +1846,7 @@ class InpaintingWebUI:
                 if not is_dual_input:
                     frames_left_hires[:len(first_indices)] = hires_left_chunk
 
-                del first_hires_np, first_hires_torch, inpainted_chunk, mask_chunk
+                del first_hires_np, first_hires_torch, inpainted_chunk, hires_raw_mask
                 del inpainted_chunk_hires, mask_chunk_hires, hires_warped_chunk
                 if not is_dual_input:
                     del hires_left_chunk
@@ -1839,22 +1857,22 @@ class InpaintingWebUI:
                     frame_indices = list(range(start_idx, end_idx))
                     if not frame_indices:
                         break
-                    actual_len = end_idx - start_idx
-
+                    
                     inpainted_chunk = frames_output_final[start_idx:end_idx].cpu()
-                    mask_chunk = frames_mask_processed[start_idx:end_idx].cpu()
-
                     inpainted_chunk_hires = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
-                    mask_chunk_hires = F.interpolate(mask_chunk, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
 
                     hires_frames_np = hires_reader.get_batch(frame_indices).asnumpy()
                     hires_frames_torch = torch.from_numpy(hires_frames_np).permute(0, 3, 1, 2).float()
 
                     if is_dual_input:
-                        hires_warped_chunk = hires_frames_torch.float() / 255.0
+                        hires_warped_chunk = hires_frames_torch[:, :, :, left_w:].float() / 255.0
+                        hires_raw_mask = hires_frames_torch[:, :, :, :left_w].float() / 255.0
                     else:
                         hires_left_chunk = hires_frames_torch[:, :, :left_h, :left_w].float() / 255.0
                         hires_warped_chunk = hires_frames_torch[:, :, warped_h:, warped_w:].float() / 255.0
+                        hires_raw_mask = hires_frames_torch[:, :, left_h:, :left_w].float() / 255.0
+
+                    mask_chunk_hires = process_hires_mask(hires_raw_mask, params['mask_dilate_kernel_size'], params['mask_blur_kernel_size'], params['mask_initial_threshold'])
 
                     frames_output_final_hires[start_idx:end_idx] = inpainted_chunk_hires
                     frames_mask_processed_hires[start_idx:end_idx] = mask_chunk_hires
@@ -1862,7 +1880,7 @@ class InpaintingWebUI:
                     if not is_dual_input:
                         frames_left_hires[start_idx:end_idx] = hires_left_chunk
 
-                    del inpainted_chunk, mask_chunk, inpainted_chunk_hires, mask_chunk_hires
+                    del inpainted_chunk, hires_raw_mask, inpainted_chunk_hires, mask_chunk_hires
                     del hires_frames_np, hires_frames_torch, hires_warped_chunk
                     if not is_dual_input:
                         del hires_left_chunk
