@@ -926,7 +926,7 @@ class MergingWebUI:
         
         return interface
 
-    def start_processing(self, *args, progress=gr.Progress()):
+    def start_processing(self, *args, ):
         global CUDA_AVAILABLE
         # Extract parameters from args
         (inpainted_folder, original_folder, mask_folder, output_folder,

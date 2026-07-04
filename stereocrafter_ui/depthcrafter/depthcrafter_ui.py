@@ -532,7 +532,7 @@ class DepthCrafterWebUI(BaseWebUI):
             self.progress, self.status_message_var
         ]
 
-    def start_processing(self, *args, progress=gr.Progress()):
+    def start_processing(self, *args, ):
         """Starts the depth estimation processing"""
         import logging
         logger = logging.getLogger(__name__)
@@ -659,7 +659,7 @@ class DepthCrafterWebUI(BaseWebUI):
             logger.info(f"CPU Offload: {cpu_offload}")
             logger.info("="*60)
             
-            progress(0, desc="Initializing DepthCrafter...")
+            
             
             # Initialize DepthCrafterDemo
             logger.info("Initializing DepthCrafter model...")
@@ -677,7 +677,7 @@ class DepthCrafterWebUI(BaseWebUI):
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:512'
             logger.info("Model initialized successfully")
             
-            progress(0.1, desc="Scanning for videos...")
+            
             
             # Check if input is a folder - if so, scan for video files (batch mode)
             video_files_to_process = []
@@ -717,7 +717,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 video_progress_start = (video_idx / total_videos)
                 video_progress_range = (1.0 / total_videos)
                 
-                progress(video_progress_start, desc=f"Video {video_idx + 1}/{total_videos}: Defining segments...")
+                
             
                 # Define video segments for this specific video
                 original_basename = os.path.splitext(os.path.basename(current_video_path))[0]
@@ -760,7 +760,7 @@ class DepthCrafterWebUI(BaseWebUI):
                     total_segments = len(all_potential_segments)
                     logger.info(f"Processing as {total_segments} segments...")
                     
-                    progress(video_progress_start, desc=f"📹 {video_info_filename} | {video_info_resolution} | {video_info_frames} frames | {total_segments} segments")
+                    
                     
                     # Create segment subfolder for this video
                     segment_subfolder_name = get_segment_output_folder_name(original_basename)
@@ -802,7 +802,7 @@ class DepthCrafterWebUI(BaseWebUI):
                             
                         # Update progress within this video's range
                         segment_progress = video_progress_start + (i / total_segments) * video_progress_range
-                        progress(segment_progress, desc=f"📹 {video_info_filename} | Segment {i+1}/{total_segments}")
+                        
                         logger.info(f"Processing segment {i+1}/{total_segments}...")
                         
                         # Determine if we should keep NPZ files for this segment
@@ -891,7 +891,7 @@ class DepthCrafterWebUI(BaseWebUI):
                             # Perform merging if merge_depth_segments module is available
                             if merge_depth_segments:
                                 try:
-                                    progress(video_progress_start + 0.9 * video_progress_range, desc=f"📹 {video_info_filename} | Merging segments...")
+                                    
                                     
                                     # Prepare merge parameters
                                     out_fmt = merge_output_format
@@ -939,7 +939,7 @@ class DepthCrafterWebUI(BaseWebUI):
                         logger.warning(f"All segments failed for {original_basename}, skipping merge")
                 else:
                     # Process as full video
-                    progress(video_progress_start + 0.2 * video_progress_range, desc=f"📹 {video_info_filename} | {video_info_resolution} | {video_info_frames} frames | Processing...")
+                    
                     logger.info("Processing as full video...")
                     
                     job_info = {
@@ -994,7 +994,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 except Exception as e:
                     logger.warning(f"Failed to clear memory after video {video_idx + 1}: {e}")
 
-            progress(1.0, desc="Processing completed!")
+            
             logger.info("=" * 80)
             logger.info("Processing completed successfully!")
             logger.info("=" * 80)
@@ -1055,14 +1055,14 @@ class DepthCrafterWebUI(BaseWebUI):
                          merge_dither, merge_dither_strength, merge_gamma_correct, merge_gamma_value,
                          merge_percentile_norm, merge_norm_low_perc, merge_norm_high_perc, merge_output_suffix,
                          enable_dual_output_robust_norm, robust_norm_low_percentile, robust_norm_high_percentile,
-                         robust_norm_output_min, robust_norm_output_max, robust_output_suffix, is_depth_far_black, progress=gr.Progress()):
+                         robust_norm_output_min, robust_norm_output_max, robust_output_suffix, is_depth_far_black, ):
         """Remerge segments using existing master metadata files"""
         import logging
         logger = logging.getLogger(__name__)
         
         try:
             logger.info("Starting re-merge process...")
-            progress(0, desc="Scanning for master metadata files...")
+            
             
             # Find all master metadata files in the output directory
             import glob
@@ -1075,7 +1075,7 @@ class DepthCrafterWebUI(BaseWebUI):
             logger.info(f"Found {len(master_meta_files)} master metadata files to re-merge")
             
             for idx, master_meta_path in enumerate(master_meta_files):
-                progress(idx / len(master_meta_files), desc=f"Re-merging {idx+1}/{len(master_meta_files)}...")
+                
                 
                 logger.info(f"Re-merging from metadata: {os.path.basename(master_meta_path)}")
                 
@@ -1131,7 +1131,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 else:
                     logger.warning(f"Merge module not available, skipping re-merge for {original_basename}")
             
-            progress(1.0, desc="Re-merging completed!")
+            
             logger.info("Re-merging completed for all found metadata files")
             
             # CRITICAL: Clear stop_event after re-merge completes

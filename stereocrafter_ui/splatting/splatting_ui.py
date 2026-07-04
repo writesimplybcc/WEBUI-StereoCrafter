@@ -2898,7 +2898,7 @@ class SplatterWebUI:
             "finished_depth_folder": finished_depth_folder,
         }
 
-    def _run_batch_process(self, settings, progress=gr.Progress()):
+    def _run_batch_process(self, settings, ):
         print("Starting batch process")
         """
         Batch processing entry point.
@@ -2994,7 +2994,7 @@ class SplatterWebUI:
                 # Update progress
                 video_name = os.path.basename(video_path)
                 progress_val = (idx / len(input_videos))
-                progress(progress_val, desc=f"Processing {idx+1}/{len(input_videos)}: {video_name}")
+                
                 yield f"Processing {idx+1}/{len(input_videos)}: {video_name}", int(progress_val * 100), gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)
 
                 # Delegates all per-video work to the helper
@@ -3027,7 +3027,7 @@ class SplatterWebUI:
                     logger.warning(f"⚠️ Failed or skipped: {video_name}")
 
             # Final progress update
-            progress(1.0, desc="✅ Processing completed!")
+            
             logger.info(f"✅ Batch processing completed. Total tasks: {overall_task_counter}")
 
             # Update status label via thread-safe method
@@ -4072,7 +4072,7 @@ class SplatterWebUI:
                          # New parameters
                          output_crf_low, depth_dilate_left, depth_blur_left, depth_blur_left_mix,
                          border_width, border_bias, border_mode, color_tags_mode,
-                         progress=gr.Progress()):
+                         ):
         """Starts the video processing with progress tracking."""
         self.stop_event.clear()
 

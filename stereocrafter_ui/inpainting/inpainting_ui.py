@@ -1000,7 +1000,7 @@ class InpaintingWebUI:
 
     # ==================== PROCESSING METHODS ====================
 
-    def start_processing(self, *args, progress=gr.Progress()):
+    def start_processing(self, *args, ):
         """Start batch processing with live logging"""
         # Extract parameters
         (input_folder, output_folder, hires_blend_folder,
@@ -1120,7 +1120,7 @@ class InpaintingWebUI:
             
             if updated:
                 # Update progress bar
-                progress(last_progress / 100.0, desc=last_status)
+                
                 
                 # Yield current state
                 yield (last_status, last_progress, last_batch, last_video_name, last_video_res,
