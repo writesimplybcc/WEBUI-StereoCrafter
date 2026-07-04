@@ -1421,16 +1421,23 @@ class InpaintingWebUI:
                         vram_free_gb = vram_total_gb - vram_used_gb
                         logger.info(f"VRAM before VAE decode: {vram_used_gb:.1f} GB used / {vram_total_gb:.1f} GB total ({vram_free_gb:.1f} GB free)")
 
-                    # Adaptive decode_chunk_size based on resolution
-                    # At 4K or higher, use 1. At 1080p, use 2. At 720p, use 4+.
-                    frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
+                    # Adaptive decode_chunk_size based on VRAM to maximize temporal quality while avoiding OOM
                     user_decode_chunk = params['decode_chunk_size']
-                    if frame_h >= 2000:  # 4K or higher
-                        adaptive_decode_chunk = 1
-                    elif frame_h >= 1000:  # 1080p range
-                        adaptive_decode_chunk = min(2, user_decode_chunk)
-                    else:  # 720p or lower
-                        adaptive_decode_chunk = min(4, user_decode_chunk)
+                    
+                    if torch.cuda.is_available():
+                        vram_free_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)) / (1024**3)
+                        frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
+                        
+                        if frame_h >= 2000:  # 4K or higher (~4.5GB per frame)
+                            safe_chunk = max(1, int(vram_free_gb // 4.5))
+                        elif frame_h >= 1000:  # 1080p range (~1.1GB per frame)
+                            safe_chunk = max(1, int(vram_free_gb // 1.1))
+                        else:
+                            safe_chunk = user_decode_chunk
+                            
+                        adaptive_decode_chunk = min(user_decode_chunk, safe_chunk)
+                    else:
+                        adaptive_decode_chunk = user_decode_chunk
 
                     if adaptive_decode_chunk < user_decode_chunk:
                         logger.info(
