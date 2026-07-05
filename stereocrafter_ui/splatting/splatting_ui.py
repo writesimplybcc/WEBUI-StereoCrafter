@@ -4105,7 +4105,8 @@ class SplatterWebUI:
         if (enable_full_res or enable_low_res) and torch.cuda.is_available():
             try:
                 total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                estimated_vram_per_frame_mb = (pre_res_width * pre_res_height / (1920 * 1080)) * 200
+                # Increased multiplier from 200 to 600 to account for float32 memory requirements in forward warp
+                estimated_vram_per_frame_mb = (pre_res_width * pre_res_height / (1920 * 1080)) * 600
                 safe_batch_size = max(1, int((total_vram_gb * 1024 * 0.7) / estimated_vram_per_frame_mb))
                 if enable_full_res and adjusted_batch_size > safe_batch_size:
                     logger.warning(f"Reducing batch_size from {batch_size} to {safe_batch_size} for {pre_res_width}x{pre_res_height} on {total_vram_gb:.1f}GB GPU")

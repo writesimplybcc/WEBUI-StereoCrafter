@@ -626,30 +626,47 @@ class RenderProcessor:
 
         # Depth is already resized to video dimensions at the start of the render loop.
 
-        # Move to GPU
+        # Move to GPU in chunks to save VRAM
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        source_tensor = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).to(device, torch.float32) / 255.0
-        depth_tensor = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).to(device, torch.float32)
+        source_tensor_cpu = torch.from_numpy(batch_video_numpy).permute(0, 3, 1, 2).float() / 255.0
+        depth_tensor_cpu = torch.from_numpy(batch_depth_numpy_float).unsqueeze(1).float()
 
         from core.splatting.forward_warp import execute_forward_warp
 
-        right_eye_raw, occlusion_mask = execute_forward_warp(
-            stereo_projector=stereo_projector,
-            source_tensor=source_tensor,
-            depth_tensor=depth_tensor,
-            target_width=target_width,
-            max_disp=max_disp,
-            zero_disparity_anchor_val=zero_disparity_anchor_val,
-            input_bias=input_bias,
-            tv_disp_comp=tv_disp_comp,
-            debug_task_name="Render",
-        )
+        # --- Memory Optimization: Process forward warp in smaller micro-chunks ---
+        # Since float32 was introduced, the VRAM spike per frame is huge. We chunk the batch 
+        # so we don't OOM on high resolutions (e.g. 4K) when batch_size > 1.
+        micro_chunk_size = 2 
+        right_eye_raw_list = []
+        occlusion_mask_list = []
+        
+        for i in range(0, source_tensor_cpu.shape[0], micro_chunk_size):
+            chunk_source = source_tensor_cpu[i:i+micro_chunk_size].to(device)
+            chunk_depth = depth_tensor_cpu[i:i+micro_chunk_size].to(device)
+            
+            chunk_right, chunk_occl = execute_forward_warp(
+                stereo_projector=stereo_projector,
+                source_tensor=chunk_source,
+                depth_tensor=chunk_depth,
+                target_width=target_width,
+                max_disp=max_disp,
+                zero_disparity_anchor_val=zero_disparity_anchor_val,
+                input_bias=input_bias,
+                tv_disp_comp=tv_disp_comp,
+                debug_task_name=f"Render chunk {i}",
+            )
+            # Move immediately to CPU to keep GPU memory free for next chunk
+            right_eye_raw_list.append(chunk_right.cpu())
+            occlusion_mask_list.append(chunk_occl.cpu())
+            
+        right_eye_raw = torch.cat(right_eye_raw_list, dim=0)
+        occlusion_mask = torch.cat(occlusion_mask_list, dim=0)
 
-        # CPU conversion
-        left_cpu = source_tensor.cpu().numpy()
-        right_cpu = right_eye_raw.cpu().numpy()
-        occl_cpu = occlusion_mask.cpu().numpy()
-        depth_cpu = depth_tensor.cpu().numpy()
+        # CPU conversion (already on CPU from chunking)
+        left_cpu = source_tensor_cpu.numpy()
+        right_cpu = right_eye_raw.numpy()
+        occl_cpu = occlusion_mask.numpy()
+        depth_cpu = depth_tensor_cpu.numpy()
 
         results = []
         for j in range(len(batch_video_numpy)):
