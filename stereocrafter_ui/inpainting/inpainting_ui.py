@@ -1265,8 +1265,10 @@ class InpaintingWebUI:
                 self.progress_queue.put(("batch_progress", f"{idx+1}/{total_videos}"))
 
             if self.stop_event.is_set():
+                logger.info("❌ Processing stopped.")
                 self.progress_queue.put(("status", "❌ Processing stopped."))
             else:
+                logger.info(f"✅ Batch completed! ({processed_count}/{total_videos} successful)")
                 self.progress_queue.put(("status", f"✅ Batch completed! ({processed_count}/{total_videos} successful)"))
                 self.progress_queue.put(("logs", f"✅ Batch completed! ({processed_count}/{total_videos} successful)"))
             self.progress_queue.put(("progress", 100))

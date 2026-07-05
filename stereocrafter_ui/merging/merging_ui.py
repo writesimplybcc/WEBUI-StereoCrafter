@@ -1324,7 +1324,8 @@ class MergingWebUI:
                 # Move files to finished (simplified for WebUI)
                 yield f"Completed: {base_name}", ((i+1)/total_videos*100)
 
-            yield "Processing completed", 100
+            logger.info("✅ Batch completed!")
+            yield "✅ Batch completed!", 100
             
         except Exception as e:
             traceback.print_exc()
