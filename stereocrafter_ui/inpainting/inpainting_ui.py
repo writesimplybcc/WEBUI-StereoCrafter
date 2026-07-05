@@ -1457,18 +1457,28 @@ class InpaintingWebUI:
                 # decoded_frames shape: [batch, channels, frames, height, width]
                 # Extract frames directly from tensor (much faster than PIL round-trip)
                 # VAE output is in [-1, 1] range, normalize to [0, 1]
-                chunk_generated = decoded_frames[0].permute(1, 0, 2, 3)  # Keep on GPU! [frames, channels, height, width]
+                chunk_generated = decoded_frames[0].permute(1, 0, 2, 3)  # Keep on GPU temporarily [frames, channels, height, width]
                 chunk_generated = (chunk_generated + 1) / 2  # Normalize from [-1, 1] to [0, 1]
                 chunk_generated = chunk_generated.clamp(0, 1)  # Ensure valid range
 
-                # Handle output collection - OPTIMIZED: Pre-allocate list capacity
+                # Move to CPU immediately to prevent massive VRAM leak over chunks
+                chunk_generated_cpu = chunk_generated.cpu()
+
+                # Handle output collection
                 if i == 0:
-                    results.append(chunk_generated[:actual_len])
+                    results.append(chunk_generated_cpu[:actual_len])
                 else:
                     # Skip overlap frames from current chunk
-                    results.append(chunk_generated[overlap:actual_len])
+                    results.append(chunk_generated_cpu[overlap:actual_len])
 
-                previous_chunk_output = chunk_generated
+                # ONLY keep the required overlap portion on GPU for the next chunk blending
+                if overlap > 0:
+                    previous_chunk_output = chunk_generated[-overlap:].clone()
+                else:
+                    previous_chunk_output = None
+                
+                del chunk_generated
+                torch.cuda.empty_cache()
 
                 # Update progress - calculate based on frames processed so far
                 frames_processed = min(i + actual_len, total_frames)
