@@ -3023,8 +3023,7 @@ class SplatterWebUI:
                 logger.warning(f"Could not write status file: {status_err}")
 
             # Yield completion status and reset UI
-            yield "Processing completed", 100, gr.Button(interactive=True), gr.Button(interactive=False), gr.Button(interactive=True)
-            yield "Ready", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
+            yield f"✅ Batch processing completed. Total tasks: {overall_task_counter}", 100, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=False)
 
         except Exception as e:
             logger.error(f"An unexpected error occurred during batch processing: {e}", exc_info=True)
@@ -4858,10 +4857,6 @@ class SplatterWebUI:
                     self.border_width_comp, self.border_bias_comp, self.border_mode_comp, self.color_tags_mode_comp
                 ],
                 outputs=[self.status_label, self.progress_bar, self.start_button, self.start_single_button, self.stop_button]
-            ).then(
-                fn=lambda: (gr.Button(interactive=False), gr.Button(interactive=False), gr.Button(interactive=True)),
-                inputs=[],
-                outputs=[self.start_button, self.start_single_button, self.stop_button]
             )
             
             self.start_single_button.click(
