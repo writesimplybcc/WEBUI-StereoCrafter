@@ -2051,25 +2051,7 @@ class SplatterWebUI:
             settings["convergence_plane"] = gui_config["convergence_plane"]
             settings["depth_gamma"] = gui_config["gamma"]
             
-            # --- AUTO-SCALE PARAMETERS ---
-            try:
-                import cv2
-                cap = cv2.VideoCapture(video_path)
-                if cap.isOpened():
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    cap.release()
-                    auto_disp, auto_dilate, auto_blur = self._get_auto_scaled_params(width)
-                    settings["max_disparity_percentage"] = auto_disp
-                    settings["depth_dilate_size_x"] = auto_dilate
-                    settings["depth_dilate_size_y"] = auto_dilate
-                    settings["depth_blur_size_x"] = auto_blur
-                    settings["depth_blur_size_y"] = auto_blur
-                    logger.info(f"Auto-scaled processing defaults for {video_name} (W:{width}): Disp {auto_disp}, Dilate {auto_dilate}, Blur {auto_blur}")
-                else:
-                    settings["max_disparity_percentage"] = gui_config["max_disparity"]
-            except Exception as e:
-                logger.error(f"Failed to auto-scale processing params: {e}")
-                settings["max_disparity_percentage"] = gui_config["max_disparity"]
+            settings["max_disparity_percentage"] = gui_config["max_disparity"]
 
         return settings
 
@@ -3321,11 +3303,9 @@ class SplatterWebUI:
                 auto_blur = sidecar_data.get("depth_blur_size_x", None)
             
             if auto_disp is None or auto_dilate is None or auto_blur is None:
-                calc_disp, calc_dilate, calc_blur = self._get_auto_scaled_params(width)
-                auto_disp = auto_disp if auto_disp is not None else calc_disp
-                auto_dilate = auto_dilate if auto_dilate is not None else calc_dilate
-                auto_blur = auto_blur if auto_blur is not None else calc_blur
-                logger.info(f"Auto-calculated parameters based on width {width}: Disp {auto_disp}, Dilate {auto_dilate}, Blur {auto_blur}")
+                auto_disp = auto_disp if auto_disp is not None else current_disp
+                auto_dilate = auto_dilate if auto_dilate is not None else current_dilate
+                auto_blur = auto_blur if auto_blur is not None else current_blur
 
             status = f"✅ {selected_video}: {total_frames} frames @ {fps:.2f} fps"
             
