@@ -547,17 +547,17 @@ class InpaintingWebUI:
             if orig_w >= 3000:
                 if total_dedicated_gb >= 30:
                     # 32GB+ RTX 5090 / 6000 Ada -> Max Speed
-                    new_tile = 2
-                    new_chunk = 24
+                    new_tile = 1
+                    new_chunk = 14
                     new_offload = 'none'
                 elif total_dedicated_gb >= 20:
                     # 24GB RTX 3090 / 4090 -> Balanced
-                    new_tile = 4
-                    new_chunk = 24
+                    new_tile = 2
+                    new_chunk = 14
                     new_offload = 'model'
                 else:
                     # < 20GB -> Max Safety
-                    new_tile = 4
+                    new_tile = 2
                     new_chunk = 10
                     new_offload = 'model'
             else:
