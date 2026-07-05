@@ -1421,30 +1421,18 @@ class InpaintingWebUI:
                         vram_free_gb = vram_total_gb - vram_used_gb
                         logger.info(f"VRAM before VAE decode: {vram_used_gb:.1f} GB used / {vram_total_gb:.1f} GB total ({vram_free_gb:.1f} GB free)")
 
-                    # Adaptive decode_chunk_size based on VRAM to maximize temporal quality while avoiding OOM
+                    # Adaptive decode_chunk_size based on resolution
+                    # The VAE Temporal Decoder is extremely memory intensive. 
+                    # At 4K or higher, use 1. At 1080p, use 2. At 720p, use 4.
                     user_decode_chunk = params['decode_chunk_size']
+                    frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
                     
-                    if torch.cuda.is_available():
-                        vram_free_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)) / (1024**3)
-                        frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
-                        frame_w = video_latents.shape[4] * 8  # Latent width * 8 = actual pixel width
-                        
-                        # Calculate pixels per frame
-                        pixels = frame_h * frame_w
-                        
-                        # Empirical formula for VAE VRAM usage (GB per frame):
-                        # VAE decoding scales roughly linearly with pixel count, with a high base overhead
-                        # 1080p (2,073,600 pixels) -> ~1.5 GB per frame
-                        # 4K (8,294,400 pixels) -> ~5.0 GB per frame
-                        # 720x1280 (921,600 pixels) -> ~0.7 GB per frame
-                        gb_per_frame = (pixels / 2073600.0) * 1.5
-                        gb_per_frame = max(0.5, gb_per_frame * 1.3) # Add 30% safety margin for intermediate tensors
-                        
-                        safe_chunk = max(1, int(vram_free_gb // gb_per_frame))
-                            
-                        adaptive_decode_chunk = min(user_decode_chunk, safe_chunk)
-                    else:
-                        adaptive_decode_chunk = user_decode_chunk
+                    if frame_h >= 2000:  # 4K or higher
+                        adaptive_decode_chunk = 1
+                    elif frame_h >= 1000:  # 1080p range
+                        adaptive_decode_chunk = min(2, user_decode_chunk)
+                    else:  # 720p or lower
+                        adaptive_decode_chunk = min(4, user_decode_chunk)
 
                     if adaptive_decode_chunk < user_decode_chunk:
                         logger.info(
