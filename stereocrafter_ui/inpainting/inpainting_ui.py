@@ -1427,13 +1427,20 @@ class InpaintingWebUI:
                     if torch.cuda.is_available():
                         vram_free_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)) / (1024**3)
                         frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
+                        frame_w = video_latents.shape[4] * 8  # Latent width * 8 = actual pixel width
                         
-                        if frame_h >= 2000:  # 4K or higher (~4.5GB per frame)
-                            safe_chunk = max(1, int(vram_free_gb // 4.5))
-                        elif frame_h >= 1000:  # 1080p range (~1.1GB per frame)
-                            safe_chunk = max(1, int(vram_free_gb // 1.1))
-                        else:
-                            safe_chunk = user_decode_chunk
+                        # Calculate pixels per frame
+                        pixels = frame_h * frame_w
+                        
+                        # Empirical formula for VAE VRAM usage (GB per frame):
+                        # VAE decoding scales roughly linearly with pixel count, with a high base overhead
+                        # 1080p (2,073,600 pixels) -> ~1.5 GB per frame
+                        # 4K (8,294,400 pixels) -> ~5.0 GB per frame
+                        # 720x1280 (921,600 pixels) -> ~0.7 GB per frame
+                        gb_per_frame = (pixels / 2073600.0) * 1.5
+                        gb_per_frame = max(0.5, gb_per_frame * 1.3) # Add 30% safety margin for intermediate tensors
+                        
+                        safe_chunk = max(1, int(vram_free_gb // gb_per_frame))
                             
                         adaptive_decode_chunk = min(user_decode_chunk, safe_chunk)
                     else:
