@@ -2299,12 +2299,12 @@ class SplatterWebUI:
                 return -(f_v - 30.0)
             return f_v
 
-        render_dilate_x = map_val(depth_dilate_size_x) * res_scale
-        render_dilate_y = map_val(depth_dilate_size_y) * res_scale
-        render_blur_x = depth_blur_size_x * res_scale
-        render_blur_y = depth_blur_size_y * res_scale
-        render_dilate_left = float(depth_dilate_left) * res_scale
-        render_blur_left = float(depth_blur_left) * res_scale
+        render_dilate_x = map_val(depth_dilate_size_x)
+        render_dilate_y = map_val(depth_dilate_size_y)
+        render_blur_x = depth_blur_size_x
+        render_blur_y = depth_blur_size_y
+        render_dilate_left = float(depth_dilate_left)
+        render_blur_left = float(depth_blur_left)
 
         needs_processing = (
             abs(render_dilate_left) > 1e-5
