@@ -936,7 +936,7 @@ class InpaintingWebUI:
             stop_button.click(
                 fn=self.stop_processing,
                 inputs=[],
-                outputs=[status_label, start_button, stop_button]
+                outputs=all_outputs
             )
 
             # Save config
