@@ -452,14 +452,14 @@ class SplatterWebUI:
             vram_tier = vram_cfg.get('_effective_vram_tier', total_vram)
         except Exception:
             vram_tier = total_vram
-        if vram_tier >= 80:
-            batch_full_default, batch_low_default = 25, 35
-        elif vram_tier >= 48:
-            batch_full_default, batch_low_default = 20, 30
-        elif vram_tier >= 32:
-            batch_full_default, batch_low_default = 16, 24
+        if vram_tier >= 90:
+            batch_full_default, batch_low_default = 100, 150
+        elif vram_tier >= 40:
+            batch_full_default, batch_low_default = 60, 90
+        elif vram_tier >= 30:
+            batch_full_default, batch_low_default = 40, 60
         elif vram_tier >= 24:
-            batch_full_default, batch_low_default = 14, 20
+            batch_full_default, batch_low_default = 20, 30
         elif vram_tier >= 12:
             batch_full_default, batch_low_default = 10, 14
         else:

@@ -471,22 +471,22 @@ class DepthCrafterDemo:
                     elif total_vram <= 32:
                         base_chunk = 10
                     elif total_vram <= 48:
-                        base_chunk = 10
+                        base_chunk = 16
                     elif total_vram <= 80:
-                        base_chunk = 12
+                        base_chunk = 24
                     else:
-                        base_chunk = 14
+                        base_chunk = 30
                 except Exception:
                     if effective_vram >= 79.5:
-                        base_chunk = 14
+                        base_chunk = 30
                     elif effective_vram >= 47.5:
-                        base_chunk = 12
+                        base_chunk = 16
                     elif effective_vram >= 31.5:
                         base_chunk = 10
                     elif effective_vram >= 23.5:
-                        base_chunk = 10
-                    elif effective_vram >= 19.5:
                         base_chunk = 6
+                    elif effective_vram >= 19.5:
+                        base_chunk = 4
                     elif effective_vram >= 15.5:
                         base_chunk = 3
                     else:

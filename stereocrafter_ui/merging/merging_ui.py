@@ -22,7 +22,7 @@ from core.common.cli_utils import draw_progress_bar
 from core.common.gpu_utils import release_cuda_memory, CUDA_AVAILABLE
 from core.common.video_io import get_video_stream_info, encode_frames_to_mp4, start_ffmpeg_pipe_process
 from core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph
-from dependency.stereocrafter_util import get_gpu_memory_info
+from dependency.stereocrafter_util import get_gpu_memory_info, get_vram_config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,10 @@ class MergingWebUI:
         self.output_format = "Full SBS (Left-Right)"
         self.pad_to_16_9 = False
         self.enable_color_transfer = True
-        self.batch_chunk_size = 20
+        try:
+            self.batch_chunk_size = get_vram_config().get("batch_chunk_size", 20)
+        except Exception:
+            self.batch_chunk_size = 20
         
         # Preview cache for faster updates
         self._frame_cache = {}  # Cache loaded frames

@@ -1423,18 +1423,48 @@ class InpaintingWebUI:
                         vram_free_gb = vram_total_gb - vram_used_gb
                         logger.info(f"VRAM before VAE decode: {vram_used_gb:.1f} GB used / {vram_total_gb:.1f} GB total ({vram_free_gb:.1f} GB free)")
 
-                    # Adaptive decode_chunk_size based on resolution
-                    # The VAE Temporal Decoder is extremely memory intensive. 
-                    # At 4K or higher, use 1. At 1080p, use 2. At 720p, use 4.
+                    # Adaptive decode_chunk_size based on resolution and VRAM
+                    # The VAE Temporal Decoder is extremely memory intensive.
                     user_decode_chunk = params['decode_chunk_size']
                     frame_h = video_latents.shape[3] * 8  # Latent height * 8 = actual pixel height
                     
-                    if frame_h >= 2000:  # 4K or higher
-                        adaptive_decode_chunk = 1
-                    elif frame_h >= 1000:  # 1080p range
-                        adaptive_decode_chunk = min(2, user_decode_chunk)
-                    else:  # 720p or lower
-                        adaptive_decode_chunk = min(4, user_decode_chunk)
+                    if torch.cuda.is_available():
+                        vram_total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    else:
+                        vram_total_gb = 24  # Safe default
+                        
+                    if vram_total_gb >= 90:
+                        # 96GB+ RTX Pro 6000 / H100
+                        if frame_h >= 2000:
+                            adaptive_decode_chunk = min(8, user_decode_chunk)
+                        elif frame_h >= 1000:
+                            adaptive_decode_chunk = min(16, user_decode_chunk)
+                        else:
+                            adaptive_decode_chunk = user_decode_chunk
+                    elif vram_total_gb >= 40:
+                        # 48GB RTX 6000 Ada / A6000
+                        if frame_h >= 2000:
+                            adaptive_decode_chunk = min(4, user_decode_chunk)
+                        elif frame_h >= 1000:
+                            adaptive_decode_chunk = min(8, user_decode_chunk)
+                        else:
+                            adaptive_decode_chunk = min(16, user_decode_chunk)
+                    elif vram_total_gb >= 30:
+                        # 32GB RTX 5090 / Mac Studio
+                        if frame_h >= 2000:
+                            adaptive_decode_chunk = min(2, user_decode_chunk)
+                        elif frame_h >= 1000:
+                            adaptive_decode_chunk = min(4, user_decode_chunk)
+                        else:
+                            adaptive_decode_chunk = min(8, user_decode_chunk)
+                    else:
+                        # 24GB or smaller cards (Strict safety limits)
+                        if frame_h >= 2000:  # 4K or higher
+                            adaptive_decode_chunk = 1
+                        elif frame_h >= 1000:  # 1080p range
+                            adaptive_decode_chunk = min(2, user_decode_chunk)
+                        else:  # 720p or lower
+                            adaptive_decode_chunk = min(4, user_decode_chunk)
 
                     if adaptive_decode_chunk < user_decode_chunk:
                         logger.info(
