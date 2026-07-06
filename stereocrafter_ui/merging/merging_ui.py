@@ -1178,7 +1178,7 @@ class MergingWebUI:
                     # Update progress every chunk
                     video_progress = frame_start / num_frames
                     overall_progress = (i + video_progress) / total_videos * 100
-                    yield f"Processing {base_name}: {int(video_progress*100)}% ({frame_start}/{num_frames})", overall_progress
+                    yield f"Processing {base_name}: {int(video_progress*100)}% ({frame_start} / {num_frames} Frames)", overall_progress
 
                     frame_end = min(frame_start + chunk_size, num_frames)
                     indices = list(range(frame_start, frame_end))
