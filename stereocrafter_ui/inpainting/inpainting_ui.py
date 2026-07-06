@@ -596,8 +596,11 @@ class InpaintingWebUI:
 
     def load_config(self):
         """Load configuration from config_inpaint.json"""
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        config_path = os.path.join(base_dir, "config_inpaint.json")
         try:
-            with open("config_inpaint.json", "r") as f:
+            with open(config_path, "r") as f:
                 return json.load(f)
         except FileNotFoundError:
             # Default structure with VRAM-aware defaults
@@ -648,8 +651,11 @@ class InpaintingWebUI:
     
     def save_config(self, config_dict):
         """Save configuration to config_inpaint.json"""
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        config_path = os.path.join(base_dir, "config_inpaint.json")
         try:
-            with open("config_inpaint.json", "w", encoding='utf-8') as f:
+            with open(config_path, "w", encoding='utf-8') as f:
                 json.dump(config_dict, f, indent=4)
             return "✓ Configuration saved successfully"
         except Exception as e:
