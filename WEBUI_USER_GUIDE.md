@@ -272,6 +272,7 @@ This is the **default and recommended workflow** for massive speed boosts. The A
 | **Mask Initial Threshold** | `0.3` | Occlusion detection |
 | **Mask Dilate Kernel** | `5` | Expand mask boundaries |
 | **Mask Blur Kernel** | `10` | Smooth mask edges |
+| **Morph Close Kernel** | `0` | Fill internal mask holes |
 
 **Expected VRAM Usage:** ~12-18 GB
 **Expected Speed:** ~30-60 fps on RTX 4090
@@ -291,6 +292,7 @@ This is the **default and recommended workflow** for massive speed boosts. The A
 | **Mask Initial Threshold** | `0.3` | Keep as-is |
 | **Mask Dilate Kernel** | `5` | Keep as-is |
 | **Mask Blur Kernel** | `10` | Keep as-is |
+| **Morph Close Kernel** | `0` | Keep as-is |
 
 **Expected VRAM Usage:** ~25-32 GB
 **Expected Speed:** ~10-20 fps on RTX 6000 Ada
@@ -309,6 +311,12 @@ This is the **default and recommended workflow** for massive speed boosts. The A
 
 **Expected VRAM Usage:** ~35-42 GB
 **Expected Speed:** ~3-7 fps on RTX 6000 Ada
+
+### Morphological Closing
+
+If you encounter noisy, fuzzy holes or black specks inside your occlusion mask, you can use the **Morph Close Kernel** slider. Morphological closing mathematically expands (dilates) the mask to swallow up the tiny holes, and then immediately shrinks (erodes) it back down to its original size—leaving the holes filled without artificially inflating the mask boundaries!
+
+![Morphological Closing Diagram](assets/morph_closing_diagram.png)
 
 ---
 

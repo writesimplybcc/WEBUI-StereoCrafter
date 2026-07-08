@@ -856,7 +856,7 @@ class InpaintingWebUI:
                     enable_post_inpainting_blend = gr.Checkbox(
                         label="Enable Post-Inpainting Blend",
                         value=self.app_config.get("enable_post_inpainting_blend", False),
-                        info="Toggle the final post-inpainting blending step and enable/disable its parameters."
+                        info="Toggle the final post-inpainting blending step. Leave this unchecked to let Merging handle the blending."
                     )
                     enable_color_transfer = gr.Checkbox(
                         label="Enable Color Transfer",
@@ -1747,21 +1747,27 @@ class InpaintingWebUI:
             
             mask_frames = torch.stack(processed_masks_grayscale).to(frames.device)
             
-            # Only apply mask processing if enable_post_inpainting_blend is True
-            if mask_params.get('enable_post_inpainting_blend', False):
-                # Binarize
-                mask_frames = (mask_frames > mask_params['mask_initial_threshold']).float()
+            # Always apply Mask Processing (Binarize, Morph, Dilate, Blur) before passing to AI
+            # Binarize
+            mask_frames = (mask_frames > mask_params['mask_initial_threshold']).float()
 
-                # Apply Dilate
-                k_d = int(mask_params['mask_dilate_kernel_size'])
-                if k_d > 0:
-                    k_d = k_d if k_d % 2 == 1 else k_d + 1
-                    mask_frames = F.max_pool2d(mask_frames, kernel_size=k_d, stride=1, padding=k_d//2)
+            # Apply Morph Close (Dilate then Erode)
+            k_m = int(mask_params.get('mask_morph_kernel_size', 0))
+            if k_m > 0:
+                k_m = k_m if k_m % 2 == 1 else k_m + 1
+                mask_frames = F.max_pool2d(mask_frames, kernel_size=k_m, stride=1, padding=k_m//2)
+                mask_frames = -F.max_pool2d(-mask_frames, kernel_size=k_m, stride=1, padding=k_m//2)
 
-                # Apply Blur
-                k_b = int(mask_params['mask_blur_kernel_size'])
-                if k_b > 0:
-                    mask_frames = self._apply_gaussian_blur(mask_frames, k_b)
+            # Apply Dilate
+            k_d = int(mask_params['mask_dilate_kernel_size'])
+            if k_d > 0:
+                k_d = k_d if k_d % 2 == 1 else k_d + 1
+                mask_frames = F.max_pool2d(mask_frames, kernel_size=k_d, stride=1, padding=k_d//2)
+
+            # Apply Blur
+            k_b = int(mask_params['mask_blur_kernel_size'])
+            if k_b > 0:
+                mask_frames = self._apply_gaussian_blur(mask_frames, k_b)
 
             frames_mask_processed = mask_frames
 
@@ -1852,7 +1858,7 @@ class InpaintingWebUI:
                         dtype=torch.float32, device='cpu'
                     )
 
-                def process_hires_mask(raw_mask_chunk, p_dilate, p_blur, p_thresh):
+                def process_hires_mask(raw_mask_chunk, p_dilate, p_blur, p_thresh, p_morph=0):
                     import cv2
                     import numpy as np
                     processed_masks = []
@@ -1867,6 +1873,10 @@ class InpaintingWebUI:
                             
                         _, binary_mask = cv2.threshold(mask_gray, int(p_thresh * 255), 255, cv2.THRESH_BINARY)
                         
+                        if p_morph > 0:
+                            morph_kernel = np.ones((int(p_morph), int(p_morph)), np.uint8)
+                            binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, morph_kernel)
+                            
                         if p_dilate > 0:
                             dilate_kernel = np.ones((int(p_dilate), int(p_dilate)), np.uint8)
                             binary_mask = cv2.dilate(binary_mask, dilate_kernel, iterations=1)
@@ -1885,6 +1895,7 @@ class InpaintingWebUI:
                 
                 scaled_dilate = max(0, int(round(params['mask_dilate_kernel_size'] * hires_scale)))
                 scaled_blur = max(0, int(round(params['mask_blur_kernel_size'] * hires_scale)))
+                scaled_morph = max(0, int(round(params.get('mask_morph_kernel_size', 0) * hires_scale)))
 
                 # Process first chunk (already loaded)
                 inpainted_chunk = frames_output_final[:len(first_indices)].cpu()
@@ -1898,7 +1909,7 @@ class InpaintingWebUI:
                     hires_warped_chunk = first_hires_torch[:, :, warped_h:, warped_w:].float() / 255.0
                     hires_raw_mask = first_hires_torch[:, :, left_h:, :left_w].float() / 255.0
                 
-                mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'])
+                mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'], scaled_morph)
 
                 frames_output_final_hires[:len(first_indices)] = inpainted_chunk_hires
                 frames_mask_processed_hires[:len(first_indices)] = mask_chunk_hires
@@ -1932,7 +1943,7 @@ class InpaintingWebUI:
                         hires_warped_chunk = hires_frames_torch[:, :, warped_h:, warped_w:].float() / 255.0
                         hires_raw_mask = hires_frames_torch[:, :, left_h:, :left_w].float() / 255.0
 
-                    mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'])
+                    mask_chunk_hires = process_hires_mask(hires_raw_mask, scaled_dilate, scaled_blur, params['mask_initial_threshold'], scaled_morph)
 
                     frames_output_final_hires[start_idx:end_idx] = inpainted_chunk_hires
                     frames_mask_processed_hires[start_idx:end_idx] = mask_chunk_hires
