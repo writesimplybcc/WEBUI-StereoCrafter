@@ -142,7 +142,7 @@ class MergingWebUI:
         self.mask_binarize_threshold = 0.3
         self.mask_dilate_kernel_size = 3
         self.mask_blur_kernel_size = 5
-        self.shadow_shift = 5
+        self.shadow_shift = 0
         self.shadow_decay_gamma = 1.3
         self.shadow_start_opacity = 0.87
         self.shadow_opacity_decay = 0.08
@@ -407,12 +407,17 @@ class MergingWebUI:
                     mask_tensor = apply_mask_dilation(mask_tensor, int(mask_dilate_kernel), use_gpu=(dev=="cuda"))
                 if mask_blur_kernel > 0:
                     mask_tensor = apply_gaussian_blur(mask_tensor, int(mask_blur_kernel), use_gpu=(dev=="cuda"))
+                
+                base_mask = mask_tensor
                 if shadow_shift > 0:
-                    mask_tensor = apply_shadow_blur(
-                        mask_tensor, int(shadow_shift), shadow_start_opacity, 
+                    expanded_mask = apply_shadow_blur(
+                        base_mask, int(shadow_shift), shadow_start_opacity, 
                         shadow_opacity_decay, shadow_min_opacity, shadow_decay_gamma, 
                         use_gpu=(dev=="cuda")
                     )
+                    shadow_intensity = torch.clamp(expanded_mask - base_mask, min=0.0, max=1.0)
+                else:
+                    shadow_intensity = 0.0
                 
                 # Blend source and warped using processed mask
                 source_tensor = torch.from_numpy(source_frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
@@ -428,7 +433,9 @@ class MergingWebUI:
                 warped_tensor = warped_tensor.to(dev)
                 
                 # Blend: warped * (1-mask) + source * mask (assuming inpainted replaces masked areas)
-                blended = warped_tensor * (1 - mask_tensor) + source_tensor * mask_tensor
+                blended = warped_tensor * (1 - base_mask) + source_tensor * base_mask
+                if shadow_shift > 0:
+                    blended = blended * (1 - shadow_intensity)
                 blended_np = (blended.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
                 preview_np = blended_np
                 
@@ -1304,16 +1311,22 @@ class MergingWebUI:
                         processed_mask = apply_gaussian_blur(processed_mask, int(mask_blur_kernel_size), use_gpu=(dev=="cuda"))
                         print(f"[DEBUG] After blur: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
                     
+                    base_mask = processed_mask
                     if shadow_shift > 0:
-                        processed_mask = apply_shadow_blur(
-                            processed_mask, int(shadow_shift), shadow_start_opacity, 
+                        expanded_mask = apply_shadow_blur(
+                            base_mask, int(shadow_shift), shadow_start_opacity, 
                             shadow_opacity_decay, shadow_min_opacity, shadow_decay_gamma, 
                             use_gpu=(dev=="cuda")
                         )
-                        print(f"[DEBUG] After shadow: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
+                        shadow_intensity = torch.clamp(expanded_mask - base_mask, min=0.0, max=1.0)
+                        print(f"[DEBUG] After shadow: max={shadow_intensity.max():.4f}")
+                    else:
+                        shadow_intensity = 0.0
 
                     # Blending
-                    blended_right = warped_original * (1 - processed_mask) + inpainted_chunk * processed_mask
+                    blended_right = warped_original * (1 - base_mask) + inpainted_chunk * base_mask
+                    if shadow_shift > 0:
+                        blended_right = blended_right * (1 - shadow_intensity)
 
                     # Assemble Final Output
                     final_chunk = None
