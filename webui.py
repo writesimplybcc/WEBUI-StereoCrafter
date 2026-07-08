@@ -52,7 +52,17 @@ class CombinedWebUI:
         
     def create_interface(self):
         """Creates the combined Gradio interface with all tabs"""
-        with gr.Blocks(title="StereoCrafter Combined WebUI") as interface:
+        custom_css = """
+        #read-res-btn {
+            background-color: #ff9900 !important;
+            color: white !important;
+            border: none;
+        }
+        #read-res-btn:hover {
+            background-color: #e68a00 !important;
+        }
+        """
+        with gr.Blocks(title="StereoCrafter Combined WebUI", css=custom_css) as interface:
 
             gr.Markdown("# StereoCrafter Combined WebUI")
             gr.Markdown("A unified interface for depth estimation, splatting, inpainting, and merging operations.")

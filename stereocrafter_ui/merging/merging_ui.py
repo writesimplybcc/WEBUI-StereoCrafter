@@ -151,16 +151,27 @@ class MergingWebUI:
         # Options
         try:
             gpu_info = get_gpu_memory_info()
-            self.use_gpu = gpu_info.get('dedicated_gb', 0) >= 12
+            # Default to True if CUDA is available, otherwise False
+            self.use_gpu = gpu_info.get('available', False)
         except Exception:
             self.use_gpu = False
+            
         self.output_format = "Full SBS (Left-Right)"
         self.pad_to_16_9 = False
         self.enable_color_transfer = True
+        
         try:
-            self.batch_chunk_size = get_vram_config().get("batch_chunk_size", 20)
+            if self.use_gpu:
+                # Dynamic VRAM-aware chunk size for 4K video merging
+                # ~1GB per frame, minus 4GB for OS/Overhead buffer
+                vram_gb = gpu_info.get('total_dedicated_gb', 8.0)
+                safe_vram = max(1.0, float(vram_gb) - 4.0)
+                self.batch_chunk_size = max(1, int(safe_vram))
+            else:
+                # CPU fallback (strictly low to prevent System RAM OOM)
+                self.batch_chunk_size = 2
         except Exception:
-            self.batch_chunk_size = 20
+            self.batch_chunk_size = 4
         
         # Preview cache for faster updates
         self._frame_cache = {}  # Cache loaded frames
@@ -168,13 +179,12 @@ class MergingWebUI:
         self._last_frame_index = None
 
     def read_input_resolution(self, mask_folder):
-        """Scan the mask folder, read the first splatted video, and auto-adjust mask kernel defaults."""
+        """Scan the mask folder, read the first splatted video, and auto-adjust mask kernel defaults and chunk size."""
         try:
             if not os.path.isdir(mask_folder):
                 return (
                     gr.update(value="❌ Mask folder does not exist"),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(), gr.update(), gr.update()
                 )
 
             videos = sorted(glob.glob(os.path.join(mask_folder, "**", "*.mp4"), recursive=True))
@@ -182,8 +192,7 @@ class MergingWebUI:
             if not splatted:
                 return (
                     gr.update(value="⚠️ No splatted videos found"),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(), gr.update(), gr.update()
                 )
 
             first = splatted[0]
@@ -191,13 +200,14 @@ class MergingWebUI:
             if not cap.isOpened():
                 return (
                     gr.update(value=f"❌ Failed to open: {os.path.basename(first)}"),
-                    gr.update(),
-                    gr.update(),
+                    gr.update(), gr.update(), gr.update()
                 )
 
             orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
 
+            # 1. Calculate Kernels based on resolution
             REFERENCE_WIDTH_FOR_DEFAULTS = 640
             DEFAULT_DILATE_AT_REF = 3
             DEFAULT_BLUR_AT_REF = 5
@@ -205,13 +215,31 @@ class MergingWebUI:
             scaled_dilate = max(1, int(round(DEFAULT_DILATE_AT_REF * scale_factor)))
             scaled_blur = max(3, int(round(DEFAULT_BLUR_AT_REF * scale_factor)))
 
-            res_str = f"{orig_w}px wide (scale={scale_factor:.2f})"
-            status_msg = f"✓ {os.path.basename(first)}: {orig_w}px → Dilate={scaled_dilate}, Blur={scaled_blur}"
+            # 2. Calculate VRAM-aware chunk size
+            # We use 4K quad-splat (33,177,600 pixels) as our baseline for "1GB per frame"
+            current_pixels = orig_w * orig_h
+            baseline_4k_pixels = 7680 * 4320
+            pixel_ratio = current_pixels / baseline_4k_pixels
+            
+            chunk_size = 4 # default safe fallback
+            try:
+                gpu_info = get_gpu_memory_info()
+                if gpu_info.get('available', False):
+                    vram_gb = float(gpu_info.get('total_dedicated_gb', 8.0))
+                    safe_vram = max(1.0, vram_gb - 4.0)
+                    chunk_size = max(1, int(safe_vram / max(0.01, pixel_ratio)))
+                else:
+                    chunk_size = 2 # CPU mode
+            except Exception as e:
+                logger.error(f"Failed to calculate dynamic chunk size: {e}")
+
+            status_msg = f"✓ {os.path.basename(first)}: {orig_w}x{orig_h} (Scale: {scale_factor:.2f}x) → Dilate: {scaled_dilate}, Blur: {scaled_blur}, Chunk: {chunk_size}"
 
             return (
                 gr.update(value=status_msg),
                 gr.update(value=float(scaled_dilate)),
                 gr.update(value=float(scaled_blur)),
+                gr.update(value=chunk_size)
             )
         except Exception as e:
             logger.error(f"Read resolution failed: {e}", exc_info=True)
@@ -536,14 +564,19 @@ class MergingWebUI:
                 mask_folder_input = gr.Textbox(
                     label="Mask Folder",
                     value=self.mask_folder,
-                    scale=2
+                    scale=1
                 )
                 output_folder_input = gr.Textbox(
                     label="Output Folder",
                     value=self.output_folder,
-                    scale=2
+                    scale=1
                 )
-                read_res_button = gr.Button("Auto-Scale Kernels", variant="secondary", scale=1)
+            
+            with gr.Row():
+                read_res_button = gr.Button("Read Splatted Resolution & Auto-Scale", variant="secondary")
+            
+            gr.Markdown("*This button will read the splatted files' resolution, then automatically adjust the Mask Dilation and Mask Blur sliders based on the resolution. It will also adjust the Batch Chunk Size slider to maximize processing speed.*")
+            
             with gr.Row():
                 resolution_display = gr.Textbox(label="Detected Resolution", value="Not read yet", interactive=False)
             
@@ -710,6 +743,7 @@ class MergingWebUI:
                     with gr.Row():
                         start_button = gr.Button("Start Blending", variant="primary")
                         stop_button = gr.Button("Stop", variant="secondary")
+                        clear_vram_btn = gr.Button("Clear VRAM", variant="secondary")
             
             # Event Handlers
             start_button.click(
@@ -732,6 +766,26 @@ class MergingWebUI:
                 fn=self.stop_processing,
                 inputs=[],
                 outputs=[status_label, progress_bar]
+            )
+            
+            read_res_button.click(
+                fn=self.read_input_resolution,
+                inputs=[mask_folder_input],
+                outputs=[resolution_display, mask_dilate_kernel_input, mask_blur_kernel_input, batch_chunk_size_input]
+            )
+            
+            def clear_vram_action():
+                import gc
+                import torch
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return gr.update(value="✓ VRAM Cleared successfully.")
+
+            clear_vram_btn.click(
+                fn=clear_vram_action,
+                inputs=[],
+                outputs=[status_label]
             )
             
             # Preview Event Handlers
@@ -1289,6 +1343,9 @@ class MergingWebUI:
                     # Convert RGB to BGR for FFmpeg (expects bgr48le)
                     final_chunk = final_chunk[:, [2, 1, 0], :, :]
 
+                    # Convert to 16-bit range in PyTorch to avoid massive Numpy float64 memory allocations
+                    final_chunk = (final_chunk * 65535).to(torch.int32)
+
                     # Write to pipe
                     cpu_chunk = final_chunk.cpu()
                     for chunk_idx, frame_tensor in enumerate(cpu_chunk):
@@ -1297,16 +1354,41 @@ class MergingWebUI:
                             raise RuntimeError("FFmpeg process finished early")
 
                         frame_np = frame_tensor.permute(1, 2, 0).numpy()
-                        frame_uint16 = (np.clip(frame_np, 0.0, 1.0) * 65535.0).astype(np.uint16)
+                        frame_uint16 = frame_np.astype(np.uint16)
                         try:
                             ffmpeg_process.stdin.write(frame_uint16.tobytes())
                             ffmpeg_process.stdin.flush()
                         except BrokenPipeError:
                             print("[DEBUG] Broken Pipe Error writing to FFmpeg")
+                            if ffmpeg_process.poll() is not None:
+                                print(f"[DEBUG] FFmpeg exited with code: {ffmpeg_process.returncode}")
+                            
+                            import time
+                            time.sleep(0.5) # Give the stderr thread a moment to catch the final crash log
+                            print("\n--- FFMPEG CRASH LOG ---")
+                            try:
+                                for line in ffmpeg_stderr[-20:]:
+                                    print(line, end="")
+                            except Exception:
+                                pass
+                            print("------------------------\n")
                             raise
                         except Exception as e:
                             print(f"[DEBUG] Error writing frame {chunk_idx} of chunk {frame_start}: {e}")
                             raise
+
+                    # Free ALL chunk variables to prevent RAM/VRAM overlaps between loop iterations
+                    # Assigning to None safely severs the reference so gc.collect() can wipe the memory
+                    inpainted_np = splatted_np = original_np = inpainted_tensor = splatted_tensor = None
+                    inpainted_chunk = original_left = mask_raw = warped_original = mask_np = None
+                    mask_gray_np = mask = processed_mask = blended_right = final_chunk = None
+                    cpu_chunk = frame_tensor = frame_np = frame_uint16 = adjusted = adj = None
+                    sbs = res_l = res_r = left_gray = None
+                    
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 # Close FFmpeg
                 if ffmpeg_process.stdin:

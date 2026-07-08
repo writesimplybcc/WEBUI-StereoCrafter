@@ -790,7 +790,7 @@ class InpaintingWebUI:
                         frames_chunk = gr.Slider(
                             minimum=1, maximum=50, value=float(self.app_config.get("frames_chunk", self.vram_defaults['frames_chunk'])),
                             step=1, label="Frames Chunk",
-                            info=f"The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: {self.vram_defaults['frames_chunk']} (auto-detected based on GPU VRAM)"
+                            info="The number of frames processed together in a single temporal batch. Adjust based on your GPU memory. Larger chunks can be faster but require more VRAM. Default: 35 for 1080p (auto-detected based on GPU VRAM)"
                         )
                         process_length = gr.Number(
                             label="Process Length (-1 for all)",
