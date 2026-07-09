@@ -283,11 +283,11 @@ def apply_color_transfer(source_frame: torch.Tensor, target_frame: torch.Tensor)
         source_np = source_for_permute.permute(1, 2, 0).cpu().numpy()
         target_np = target_for_permute.permute(1, 2, 0).cpu().numpy()
 
-        source_np_float32 = np.clip(source_np, 0.0, 1.0).astype(np.float32)
-        target_np_float32 = np.clip(target_np, 0.0, 1.0).astype(np.float32)
+        source_np_uint8 = (np.clip(source_np, 0.0, 1.0) * 255).astype(np.uint8)
+        target_np_uint8 = (np.clip(target_np, 0.0, 1.0) * 255).astype(np.uint8)
 
-        source_lab = cv2.cvtColor(source_np_float32, cv2.COLOR_RGB2LAB)
-        target_lab = cv2.cvtColor(target_np_float32, cv2.COLOR_RGB2LAB)
+        source_lab = cv2.cvtColor(source_np_uint8, cv2.COLOR_RGB2LAB)
+        target_lab = cv2.cvtColor(target_np_uint8, cv2.COLOR_RGB2LAB)
 
         src_mean, src_std = cv2.meanStdDev(source_lab)
         tgt_mean, tgt_std = cv2.meanStdDev(target_lab)
@@ -300,22 +300,13 @@ def apply_color_transfer(source_frame: torch.Tensor, target_frame: torch.Tensor)
         src_std = np.clip(src_std, 1e-6, None)
         tgt_std = np.clip(tgt_std, 1e-6, None)
 
-        target_lab_float = target_lab.copy()
+        target_lab_float = target_lab.astype(np.float32)
         for i in range(3):
             target_lab_float[:, :, i] = (target_lab_float[:, :, i] - tgt_mean[i]) / tgt_std[i] * src_std[i] + src_mean[i]
 
-        # Clamp LAB values to valid bounds for OpenCV float32 to prevent NaNs
-        target_lab_float[:, :, 0] = np.clip(target_lab_float[:, :, 0], 0.0, 100.0)
-        target_lab_float[:, :, 1] = np.clip(target_lab_float[:, :, 1], -127.0, 127.0)
-        target_lab_float[:, :, 2] = np.clip(target_lab_float[:, :, 2], -127.0, 127.0)
-
-        # For float32 LAB2RGB in OpenCV, L is 0-100, a/b are floats.
-        # cv2 handles clipping internally for the output RGB (0.0 to 1.0).
-        adjusted_rgb = cv2.cvtColor(target_lab_float, cv2.COLOR_LAB2RGB)
-        adjusted_rgb = np.nan_to_num(adjusted_rgb, nan=0.0)
-        adjusted_rgb = np.clip(adjusted_rgb, 0.0, 1.0)
-        
-        return torch.from_numpy(adjusted_rgb).permute(2, 0, 1).float()
+        adjusted_lab_uint8 = np.clip(target_lab_float, 0, 255).astype(np.uint8)
+        adjusted_rgb = cv2.cvtColor(adjusted_lab_uint8, cv2.COLOR_LAB2RGB)
+        return torch.from_numpy(adjusted_rgb).permute(2, 0, 1).float() / 255.0
     except Exception as e:
         logger.error(f"Error during color transfer: {e}")
         return target_frame

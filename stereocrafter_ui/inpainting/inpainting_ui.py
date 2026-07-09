@@ -2016,32 +2016,26 @@ class InpaintingWebUI:
                         ref_np = ref_resized.permute(0, 2, 3, 1).numpy()
                         tgt_np = chunk_output.permute(0, 2, 3, 1).numpy()
                         
-                        ref_np_float32 = np.clip(ref_np, 0.0, 1.0).astype(np.float32)
-                        tgt_np_float32 = np.clip(tgt_np, 0.0, 1.0).astype(np.float32)
-                        adjusted = np.empty_like(ref_np)
+                        ref_np_uint8 = np.clip(ref_np * 255, 0, 255).astype(np.uint8)
+                        tgt_np_uint8 = np.clip(tgt_np * 255, 0, 255).astype(np.uint8)
+                        adjusted = np.empty_like(ref_np_uint8)
                         
-                        for t in range(ref_np_float32.shape[0]):
-                            ref_lab = cv2.cvtColor(ref_np_float32[t], cv2.COLOR_RGB2LAB)
-                            tgt_lab = cv2.cvtColor(tgt_np_float32[t], cv2.COLOR_RGB2LAB)
+                        for t in range(ref_np_uint8.shape[0]):
+                            ref_lab = cv2.cvtColor(ref_np_uint8[t], cv2.COLOR_RGB2LAB)
+                            tgt_lab = cv2.cvtColor(tgt_np_uint8[t], cv2.COLOR_RGB2LAB)
                             s_m, s_s = cv2.meanStdDev(ref_lab)
                             t_m, t_s = cv2.meanStdDev(tgt_lab)
                             s_m, s_s = s_m.flatten(), s_s.flatten()
                             t_m, t_s = t_m.flatten(), t_s.flatten()
                             s_s = np.clip(s_s, 1e-6, None)
                             t_s = np.clip(t_s, 1e-6, None)
-                            tgt_lab_f = tgt_lab.copy()
+                            tgt_lab_f = tgt_lab.astype(np.float32)
                             for c in range(3):
                                 tgt_lab_f[:, :, c] = (tgt_lab_f[:, :, c] - t_m[c]) / t_s[c] * s_s[c] + s_m[c]
+                            tgt_lab_u = np.clip(tgt_lab_f, 0, 255).astype(np.uint8)
+                            adjusted[t] = cv2.cvtColor(tgt_lab_u, cv2.COLOR_LAB2RGB)
                             
-                            tgt_lab_f[:, :, 0] = np.clip(tgt_lab_f[:, :, 0], 0.0, 100.0)
-                            tgt_lab_f[:, :, 1] = np.clip(tgt_lab_f[:, :, 1], -127.0, 127.0)
-                            tgt_lab_f[:, :, 2] = np.clip(tgt_lab_f[:, :, 2], -127.0, 127.0)
-                            
-                            adjusted_rgb = cv2.cvtColor(tgt_lab_f, cv2.COLOR_LAB2RGB)
-                            adjusted_rgb = np.nan_to_num(adjusted_rgb, nan=0.0)
-                            adjusted[t] = np.clip(adjusted_rgb, 0.0, 1.0)
-                            
-                        chunk_output = torch.from_numpy(adjusted).permute(0, 3, 1, 2).float()
+                        chunk_output = torch.from_numpy(adjusted).permute(0, 3, 1, 2).float() / 255.0
 
                 # --- Post-Inpainting Blend ---
                 if params['enable_post_inpainting_blend']:
