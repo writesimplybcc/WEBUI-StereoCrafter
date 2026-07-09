@@ -1764,6 +1764,8 @@ class InpaintingWebUI:
                 k_d = k_d if k_d % 2 == 1 else k_d + 1
                 mask_frames = F.max_pool2d(mask_frames, kernel_size=k_d, stride=1, padding=k_d//2)
 
+            mask_for_ai = mask_frames.clone()
+
             # Apply Blur
             k_b = int(mask_params['mask_blur_kernel_size'])
             if k_b > 0:
@@ -1778,11 +1780,11 @@ class InpaintingWebUI:
             if pad_h > 0 or pad_w > 0:
                 # Convert to float for padding and model input
                 warped_padded = F.pad(warped_frames.float() / 255.0, (0, pad_w, 0, pad_h), mode='constant', value=0)
-                mask_padded = F.pad(frames_mask_processed, (0, pad_w, 0, pad_h), mode='constant', value=0)
+                mask_padded = F.pad(mask_for_ai, (0, pad_w, 0, pad_h), mode='constant', value=0)
             else:
                 # Convert to float for model input
                 warped_padded = warped_frames.float() / 255.0
-                mask_padded = frames_mask_processed
+                mask_padded = mask_for_ai
 
             # Info extraction
             video_stream_info = get_video_stream_info(input_video_path)
