@@ -1294,14 +1294,6 @@ class MergingWebUI:
                         inpainted_chunk = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
                         mask = F.interpolate(mask, size=(hires_H, hires_W), mode='bilinear', align_corners=False)
 
-                    # Color Transfer
-                    if enable_color_transfer:
-                        adjusted = []
-                        for idx in range(len(inpainted_chunk)):
-                            adj = apply_color_transfer(original_left[idx].cpu(), inpainted_chunk[idx].cpu())
-                            adjusted.append(adj.to(dev))
-                        inpainted_chunk = torch.stack(adjusted)
-
                     # Mask Processing
                     processed_mask = mask.clone()
                     print(f"[DEBUG] Mask processing params: threshold={mask_binarize_threshold}, dilate={mask_dilate_kernel_size}, blur={mask_blur_kernel_size}, shadow_shift={shadow_shift}")
@@ -1335,6 +1327,14 @@ class MergingWebUI:
                     blended_right = warped_original * (1 - base_mask) + inpainted_chunk * base_mask
                     if shadow_shift > 0:
                         blended_right = blended_right * (1 - shadow_intensity)
+                        
+                    # Color Transfer (Applied to the fully assembled right eye)
+                    if enable_color_transfer:
+                        adjusted = []
+                        for idx in range(len(blended_right)):
+                            adj = apply_color_transfer(original_left[idx].cpu(), blended_right[idx].cpu())
+                            adjusted.append(adj.to(dev))
+                        blended_right = torch.stack(adjusted)
 
                     # Assemble Final Output
                     final_chunk = None
