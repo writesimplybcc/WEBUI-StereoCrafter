@@ -12,6 +12,12 @@ if [ -f "/workspace/WEBUI-StereoCrafter/.env" ]; then
     export $(grep -v '^#' /workspace/WEBUI-StereoCrafter/.env | xargs)
 fi
 
+# Install FileBrowser if it's not installed
+if ! command -v filebrowser &> /dev/null; then
+    echo "FileBrowser not found. Installing..."
+    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+fi
+
 # Initialize FileBrowser if not already done
 if [ ! -f "$DB_FILE" ]; then
     echo "Initializing FileBrowser..."
