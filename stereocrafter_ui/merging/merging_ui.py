@@ -1114,6 +1114,9 @@ class MergingWebUI:
                     splatted_file_path = splatted2_matches[0]
                     is_dual_input = True
                 
+                if not is_dual_input:
+                    is_sbs_input = False
+
                 if not splatted_file_path:
                     print(f"[DEBUG] Skipping {base_name} - No splatted file found in {mask_folder}")
                     yield f"Skipping {base_name} - No splatted file found", current_percent
