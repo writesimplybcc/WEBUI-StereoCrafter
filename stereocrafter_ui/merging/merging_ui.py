@@ -1269,12 +1269,8 @@ class MergingWebUI:
                             original_left = torch.zeros_like(inpainted_chunk)
                         
                         warped_original = splatted_tensor[:, :, :, W_chunk//2:]
-                        
-                        # Reconstruct mask from black holes in the warped frame (right eye)
-                        # sum across C (dim=1). If sum == 0, it's a hole.
-                        mask_bool = (warped_original.sum(dim=1, keepdim=True) == 0).float()
-                        # Replicate to 3 channels to match downstream np.mean logic
-                        mask_raw = mask_bool.repeat(1, 3, 1, 1)
+                        # Extract mask directly from the left half of the splatted video
+                        mask_raw = splatted_tensor[:, :, :, :W_chunk//2]
                     else:
                         # Quad input
                         half_h, half_w = H_chunk // 2, W_chunk // 2
