@@ -304,9 +304,15 @@ def apply_color_transfer(source_frame: torch.Tensor, target_frame: torch.Tensor)
         for i in range(3):
             target_lab_float[:, :, i] = (target_lab_float[:, :, i] - tgt_mean[i]) / tgt_std[i] * src_std[i] + src_mean[i]
 
+        # Clamp LAB values to valid bounds for OpenCV float32 to prevent NaNs
+        target_lab_float[:, :, 0] = np.clip(target_lab_float[:, :, 0], 0.0, 100.0)
+        target_lab_float[:, :, 1] = np.clip(target_lab_float[:, :, 1], -127.0, 127.0)
+        target_lab_float[:, :, 2] = np.clip(target_lab_float[:, :, 2], -127.0, 127.0)
+
         # For float32 LAB2RGB in OpenCV, L is 0-100, a/b are floats.
         # cv2 handles clipping internally for the output RGB (0.0 to 1.0).
         adjusted_rgb = cv2.cvtColor(target_lab_float, cv2.COLOR_LAB2RGB)
+        adjusted_rgb = np.nan_to_num(adjusted_rgb, nan=0.0)
         adjusted_rgb = np.clip(adjusted_rgb, 0.0, 1.0)
         
         return torch.from_numpy(adjusted_rgb).permute(2, 0, 1).float()

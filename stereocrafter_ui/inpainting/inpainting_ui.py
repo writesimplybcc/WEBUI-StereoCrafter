@@ -1764,8 +1764,6 @@ class InpaintingWebUI:
                 k_d = k_d if k_d % 2 == 1 else k_d + 1
                 mask_frames = F.max_pool2d(mask_frames, kernel_size=k_d, stride=1, padding=k_d//2)
 
-            mask_for_ai = mask_frames.clone()
-
             # Apply Blur
             k_b = int(mask_params['mask_blur_kernel_size'])
             if k_b > 0:
@@ -1780,11 +1778,11 @@ class InpaintingWebUI:
             if pad_h > 0 or pad_w > 0:
                 # Convert to float for padding and model input
                 warped_padded = F.pad(warped_frames.float() / 255.0, (0, pad_w, 0, pad_h), mode='constant', value=0)
-                mask_padded = F.pad(mask_for_ai, (0, pad_w, 0, pad_h), mode='constant', value=0)
+                mask_padded = F.pad(frames_mask_processed, (0, pad_w, 0, pad_h), mode='constant', value=0)
             else:
                 # Convert to float for model input
                 warped_padded = warped_frames.float() / 255.0
-                mask_padded = mask_for_ai
+                mask_padded = frames_mask_processed
 
             # Info extraction
             video_stream_info = get_video_stream_info(input_video_path)
@@ -2034,7 +2032,13 @@ class InpaintingWebUI:
                             tgt_lab_f = tgt_lab.copy()
                             for c in range(3):
                                 tgt_lab_f[:, :, c] = (tgt_lab_f[:, :, c] - t_m[c]) / t_s[c] * s_s[c] + s_m[c]
+                            
+                            tgt_lab_f[:, :, 0] = np.clip(tgt_lab_f[:, :, 0], 0.0, 100.0)
+                            tgt_lab_f[:, :, 1] = np.clip(tgt_lab_f[:, :, 1], -127.0, 127.0)
+                            tgt_lab_f[:, :, 2] = np.clip(tgt_lab_f[:, :, 2], -127.0, 127.0)
+                            
                             adjusted_rgb = cv2.cvtColor(tgt_lab_f, cv2.COLOR_LAB2RGB)
+                            adjusted_rgb = np.nan_to_num(adjusted_rgb, nan=0.0)
                             adjusted[t] = np.clip(adjusted_rgb, 0.0, 1.0)
                             
                         chunk_output = torch.from_numpy(adjusted).permute(0, 3, 1, 2).float()
