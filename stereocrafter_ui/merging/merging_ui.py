@@ -357,12 +357,19 @@ class MergingWebUI:
             is_left_right = False 
 
             if is_dual:
-                # Dual: Left is mask, Right is warped
+                # Dual: Left is original, Right is warped
                 half_w = width // 2
-                occlu_frame = frame[:, :half_w, :]
+                original_left_frame = frame[:, :half_w, :]
                 warped_frame = frame[:, half_w:, :]
-                source_frame = warped_frame  # No source available in dual splat usually
-                depth_frame = occlu_frame  # No depth in dual
+                
+                # Reconstruct mask by finding pure black pixels in the warped frame (holes)
+                # warped_frame is [H, W, C]
+                mask_2d = (warped_frame.sum(axis=2) == 0).astype(np.float32)
+                occlu_frame = np.stack([mask_2d, mask_2d, mask_2d], axis=-1) * 255.0
+                occlu_frame = occlu_frame.astype(np.uint8)
+                
+                source_frame = warped_frame  # Preview base
+                depth_frame = original_left_frame  # No depth in dual
             elif '_splatted4' in basename or (height == width): 
                 # Quad: TL=source, TR=depth, BL=mask, BR=warped
                 half_h, half_w = height // 2, width // 2
@@ -1261,8 +1268,13 @@ class MergingWebUI:
                         else:
                             original_left = torch.zeros_like(inpainted_chunk)
                         
-                        mask_raw = splatted_tensor[:, :, :, :W_chunk//2]
                         warped_original = splatted_tensor[:, :, :, W_chunk//2:]
+                        
+                        # Reconstruct mask from black holes in the warped frame (right eye)
+                        # sum across C (dim=1). If sum == 0, it's a hole.
+                        mask_bool = (warped_original.sum(dim=1, keepdim=True) == 0).float()
+                        # Replicate to 3 channels to match downstream np.mean logic
+                        mask_raw = mask_bool.repeat(1, 3, 1, 1)
                     else:
                         # Quad input
                         half_h, half_w = H_chunk // 2, W_chunk // 2
