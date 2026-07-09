@@ -644,7 +644,7 @@ class InpaintingWebUI:
                 'mask_morph_kernel_size': 0.0,
                 'mask_dilate_kernel_size': 5,
                 'mask_blur_kernel_size': 10,
-                'enable_post_inpainting_blend': True,  # Enabled for quality
+                'enable_post_inpainting_blend': False,  # Disabled by default, Merging handles this better
                 'enable_color_transfer': True,  # Enabled for quality
                 'decode_chunk_size': vram_config['decode_chunk_size']
             }
