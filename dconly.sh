@@ -78,7 +78,19 @@ fi
 
 echo "HuggingFace login successful"
 
-# Download DepthCrafter ONLY
+# Download stable-video-diffusion (Required by DepthCrafter)
+if [ ! -d "stable-video-diffusion-img2vid-xt-1-1" ]; then
+    echo "Downloading stable-video-diffusion-img2vid-xt-1-1 (Required by DepthCrafter)..."
+    if command -v hf &> /dev/null; then
+        hf download stabilityai/stable-video-diffusion-img2vid-xt-1-1 --local-dir stable-video-diffusion-img2vid-xt-1-1
+    else
+        python -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/stable-video-diffusion-img2vid-xt-1-1', local_dir='stable-video-diffusion-img2vid-xt-1-1', local_dir_use_symlinks=False)"
+    fi
+else
+    echo "✅ SVD weights already downloaded"
+fi
+
+# Download DepthCrafter
 if [ ! -d "DepthCrafter" ]; then
     echo "Downloading DepthCrafter..."
     if command -v hf &> /dev/null; then
