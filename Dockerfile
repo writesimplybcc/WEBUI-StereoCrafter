@@ -17,6 +17,7 @@ COPY requirements-docker.txt .
 COPY download_weights.sh .
 COPY start-with-filebrowser.sh .
 COPY runpod-docker-startup.sh .
+COPY dconly.sh .
 
 # Your WEBUI folders
 COPY gui/ ./gui/

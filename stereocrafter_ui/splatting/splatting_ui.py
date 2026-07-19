@@ -2290,7 +2290,7 @@ class SplatterWebUI:
             if batch_depth_numpy_raw.ndim == 4
             else batch_depth_numpy_raw.shape[1]
         )
-        res_scale = math.sqrt(current_width / 960.0)
+        res_scale = current_width / 1024.0
 
         def map_val(v):
             f_v = float(v)
@@ -2299,12 +2299,12 @@ class SplatterWebUI:
                 return -(f_v - 30.0)
             return f_v
 
-        render_dilate_x = map_val(depth_dilate_size_x)
-        render_dilate_y = map_val(depth_dilate_size_y)
-        render_blur_x = depth_blur_size_x
-        render_blur_y = depth_blur_size_y
-        render_dilate_left = float(depth_dilate_left)
-        render_blur_left = float(depth_blur_left)
+        render_dilate_x = map_val(depth_dilate_size_x) * res_scale
+        render_dilate_y = map_val(depth_dilate_size_y) * res_scale
+        render_blur_x = depth_blur_size_x * res_scale
+        render_blur_y = depth_blur_size_y * res_scale
+        render_dilate_left = float(depth_dilate_left) * res_scale
+        render_blur_left = float(depth_blur_left) * res_scale
 
         needs_processing = (
             abs(render_dilate_left) > 1e-5

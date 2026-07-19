@@ -1643,11 +1643,12 @@ def get_vram_config(force_refresh: bool = False):
     if 'rtx 3060' in gpu_name and effective_vram_gb >= 10:
         # RTX 3060 12GB variant - use 12GB tier settings
         logger.info(f"✓ Selected: RTX 3060 12GB tier")
-        logger.info(f"  window_size: 100, overlap: 6")
+        logger.info(f"  window_size: 24, overlap: 6")
         config = {
             'decode_chunk_size': 6,    # Conservative for 12GB GPUs to avoid OOM
-            'window_size': 100,
-            'overlap': 6,            # Balanced for speed and quality (user-optimized)
+            'window_size': 24,         # Safe for 854x480 on 12GB
+            'overlap': 6,              # Balanced for speed and quality
+
             'frames_chunk': 16,      # Reduced for stability
             'batch_chunk_size': 12,
             'processing_chunk_size': 60

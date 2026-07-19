@@ -268,7 +268,11 @@ class DepthCrafterWebUI(BaseWebUI):
             value="_clipped_depth",
             info="The suffix added to the filename of the second (robustly normalized) output. E.g., '_clipped_depth' will result in 'video_name_clipped_depth.mp4'."
         )
-        self.is_depth_far_black = gr.Checkbox(label="Is Depth Far Black", value=True)
+        self.is_depth_far_black = gr.Checkbox(
+            label="Inverse Depth (Far is Black)", 
+            value=True,
+            info="DepthCrafter default output is Inverse Depth (Far = Black, Close = White). Uncheck to invert this standard output (Far = White, Close = Black)."
+        )
         self.dark_mode_var = gr.Checkbox(label="Dark Mode", value=False)
         # Tiling controls
         self.enable_tiling = gr.Checkbox(
@@ -383,6 +387,7 @@ class DepthCrafterWebUI(BaseWebUI):
 
                 with gr.Accordion("Secondary Output", open=False):
                     self.enable_dual_output_robust_norm.render()
+                    self.is_depth_far_black.render()
                     gr.Markdown("**Depth Output Range (0-1):**")
                     with gr.Row():
                         self.robust_norm_output_min.render()

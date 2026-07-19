@@ -559,6 +559,14 @@ class MergingWebUI:
         
         with gr.Blocks(title="Merging - StereoCrafter") as interface:
             gr.Markdown("## 🎬 Stereocrafter Merging")
+            gr.Markdown(
+                "> [!IMPORTANT]\n"
+                "> **The Merging step is no longer recommended.**\n"
+                "> \n"
+                "> Due to binocular summation, the human brain automatically fuses the high-fidelity detail of the left eye with the depth geometry of the softer right eye. Attempting to artificially blend high-fidelity pixels back into the right eye using masks introduces artifacts (ghosting, hacked edges) that degrade the 3D experience.\n"
+                "> \n"
+                "> It is strongly recommended to use the raw Inpainted output as your final Right Eye view. This tab remains only for legacy workflows."
+            )
             
             # Folders Section at TOP (full width)
             with gr.Group():

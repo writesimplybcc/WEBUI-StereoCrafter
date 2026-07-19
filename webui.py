@@ -22,7 +22,7 @@ if torch.cuda.is_available():
 from stereocrafter_ui.depthcrafter import DepthCrafterWebUI
 from stereocrafter_ui.splatting import SplatterWebUI
 from stereocrafter_ui.inpainting import InpaintingWebUI
-from stereocrafter_ui.merging import MergingWebUI
+from stereocrafter_ui.merging.merging_ui import MergingWebUI
 from stereocrafter_ui.file_manager import FileManagerUI
 
 def get_gpu_info():
