@@ -853,10 +853,11 @@ class InpaintingWebUI:
             with gr.Group():
                 gr.Markdown("### Post-Processing")
                 with gr.Row():
-                    enable_post_inpainting_blend = gr.Checkbox(
-                        label="Enable Post-Inpainting Blend",
-                        value=self.app_config.get("enable_post_inpainting_blend", False),
-                        info="Toggle the final post-inpainting blending step. Leave this unchecked to let Merging handle the blending."
+                    blend_mode = gr.Dropdown(
+                        label="Blend Mode",
+                        choices=["None (Raw Inpainting)", "Directional Blend (Recommended)"],
+                        value=self.app_config.get("blend_mode", "Directional Blend (Recommended)"),
+                        info="Select 'None' to use raw AI inpainting, or 'Directional Blend' to seamlessly merge the original high-res foreground without halos."
                     )
                     enable_color_transfer = gr.Checkbox(
                         label="Enable Color Transfer",
@@ -894,8 +895,9 @@ class InpaintingWebUI:
 
             # ==================== EVENT HANDLERS ====================
 
-            # Toggle mask sliders based on Post-Inpainting Blend checkbox (matches GUI)
-            def toggle_mask_sliders(enabled):
+            # Toggle mask sliders based on Blend Mode Dropdown
+            def toggle_mask_sliders(mode):
+                enabled = mode != "None (Raw Inpainting)"
                 return [
                     gr.update(interactive=enabled),  # mask_initial_threshold
                     gr.update(interactive=enabled),  # mask_morph_kernel_size
@@ -903,9 +905,9 @@ class InpaintingWebUI:
                     gr.update(interactive=enabled)   # mask_blur_kernel_size
                 ]
             
-            enable_post_inpainting_blend.change(
+            blend_mode.change(
                 fn=toggle_mask_sliders,
-                inputs=[enable_post_inpainting_blend],
+                inputs=[blend_mode],
                 outputs=[mask_initial_threshold, mask_morph_kernel_size, mask_dilate_kernel_size, mask_blur_kernel_size]
             )
             
@@ -923,7 +925,7 @@ class InpaintingWebUI:
                 original_input_blend_strength, output_crf, process_length, offload_type,
                 mask_initial_threshold, mask_morph_kernel_size,
                 mask_dilate_kernel_size, mask_blur_kernel_size,
-                enable_post_inpainting_blend, enable_color_transfer, hf_token
+                blend_mode, enable_color_transfer, hf_token
             ]
             
             # All output components
@@ -955,7 +957,7 @@ class InpaintingWebUI:
                     "output_crf": int(args[9]), "process_length": int(args[10]), "offload_type": args[11],
                     "mask_initial_threshold": float(args[12]), "mask_morph_kernel_size": float(args[13]),
                     "mask_dilate_kernel_size": float(args[14]), "mask_blur_kernel_size": float(args[15]),
-                    "enable_post_inpainting_blend": args[16], "enable_color_transfer": args[17],
+                    "blend_mode": args[16], "enable_color_transfer": args[17],
                     "hf_token": args[18]
                 }),
                 inputs=all_params,
@@ -970,7 +972,7 @@ class InpaintingWebUI:
                         original_input_blend_strength, output_crf, process_length, offload_type,
                         mask_initial_threshold, mask_morph_kernel_size,
                         mask_dilate_kernel_size, mask_blur_kernel_size,
-                        enable_post_inpainting_blend, enable_color_transfer, hf_token, status_label]
+                        blend_mode, enable_color_transfer, hf_token, status_label]
             )
             
             # Reset to defaults
@@ -981,7 +983,7 @@ class InpaintingWebUI:
                         original_input_blend_strength, output_crf, process_length, offload_type,
                         mask_initial_threshold, mask_morph_kernel_size,
                         mask_dilate_kernel_size, mask_blur_kernel_size,
-                        enable_post_inpainting_blend, enable_color_transfer, hf_token, status_label]
+                        blend_mode, enable_color_transfer, hf_token, status_label]
             )
 
         return interface
@@ -1014,7 +1016,7 @@ class InpaintingWebUI:
          original_input_blend_strength, output_crf, process_length, offload_type,
          mask_initial_threshold, mask_morph_kernel_size,
          mask_dilate_kernel_size, mask_blur_kernel_size,
-         enable_post_inpainting_blend, enable_color_transfer, hf_token) = args
+         blend_mode, enable_color_transfer, hf_token) = args
 
         # Validate
         try:
@@ -1061,7 +1063,7 @@ class InpaintingWebUI:
             'mask_morph_kernel_size': mask_morph_kernel_size,
             'mask_dilate_kernel_size': mask_dilate_kernel_size,
             'mask_blur_kernel_size': mask_blur_kernel_size,
-            'enable_post_inpainting_blend': enable_post_inpainting_blend,
+            'blend_mode': blend_mode,
             'enable_color_transfer': enable_color_transfer,
             'hf_token': hf_token
         }
@@ -1762,7 +1764,12 @@ class InpaintingWebUI:
             k_d = int(mask_params['mask_dilate_kernel_size'])
             if k_d > 0:
                 k_d = k_d if k_d % 2 == 1 else k_d + 1
-                mask_frames = F.max_pool2d(mask_frames, kernel_size=k_d, stride=1, padding=k_d//2)
+                # Directional Dilation (Rightward)
+                pad_x_left = k_d - 1
+                pad_x_right = 0
+                pad_y = k_d // 2
+                padded_mask = F.pad(mask_frames, (pad_x_left, pad_x_right, pad_y, pad_y), mode='constant', value=0)
+                mask_frames = F.max_pool2d(padded_mask, kernel_size=(k_d, k_d), stride=1, padding=0)
 
             # Apply Blur
             k_b = int(mask_params['mask_blur_kernel_size'])
@@ -2038,7 +2045,7 @@ class InpaintingWebUI:
                         chunk_output = torch.from_numpy(adjusted).permute(0, 3, 1, 2).float() / 255.0
 
                 # --- Post-Inpainting Blend ---
-                if params['enable_post_inpainting_blend']:
+                if params.get('blend_mode', 'None (Raw Inpainting)') != "None (Raw Inpainting)":
                     chunk_mask_cpu = frames_mask_processed[i:end_i].cpu()
                     if chunk_mask_cpu.shape[1] != 1: 
                         chunk_mask_cpu = chunk_mask_cpu.mean(dim=1, keepdim=True)
@@ -2271,11 +2278,15 @@ class InpaintingWebUI:
         kernel_x = kernel.view(1, 1, 1, kernel_val)
         kernel_y = kernel.view(1, 1, kernel_val, 1)
 
-        padding_x = kernel_val // 2
-        blurred_mask = F.conv2d(mask, kernel_x, padding=(0, padding_x), groups=mask.shape[1])
-
-        padding_y = kernel_val // 2
-        blurred_mask = F.conv2d(blurred_mask, kernel_y, padding=(padding_y, 0), groups=mask.shape[1])
+        # Directional Blur (Rightward)
+        pad_x_left = kernel_val - 1
+        pad_x_right = 0
+        pad_y = kernel_val // 2
+        
+        padded_mask = F.pad(mask, (pad_x_left, pad_x_right, pad_y, pad_y), mode='replicate')
+        
+        blurred_mask = F.conv2d(padded_mask, kernel_x, padding=0, groups=mask.shape[1])
+        blurred_mask = F.conv2d(blurred_mask, kernel_y, padding=0, groups=mask.shape[1])
 
         return torch.clamp(blurred_mask, 0.0, 1.0)
 

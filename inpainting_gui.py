@@ -82,7 +82,13 @@ class InpaintingGUI(ThemedTk):
         self.mask_dilate_kernel_size_var = tk.StringVar(value=str(self.app_config.get("mask_dilate_kernel_size", 5)))        
         self.mask_blur_kernel_size_var = tk.StringVar(value=str(self.app_config.get("mask_blur_kernel_size", 10)))
 
-        self.enable_post_inpainting_blend = tk.BooleanVar(value=self.app_config.get("enable_post_inpainting_blend", False))
+        # Handle legacy boolean config if present
+        legacy_blend = self.app_config.get("enable_post_inpainting_blend", None)
+        default_blend_mode = "Directional Blend (Recommended)" if legacy_blend else "None (Raw Inpainting)"
+        if legacy_blend is None:
+            default_blend_mode = self.app_config.get("blend_mode", "Directional Blend (Recommended)")
+
+        self.blend_mode_var = tk.StringVar(value=default_blend_mode)
         self.enable_color_transfer = tk.BooleanVar(value=self.app_config.get("enable_color_transfer", True))
         
         self.processed_count = tk.IntVar(value=0)
@@ -225,13 +231,25 @@ class InpaintingGUI(ThemedTk):
             kernel_x = kernel_x.view(1, 1, 1, kernel_val)
             kernel_y = kernel_y.view(1, 1, kernel_val, 1)
 
-            padding_x = kernel_val // 2
-            blurred_mask = F.conv2d(mask, kernel_x, padding=(0, padding_x), groups=mask.shape[1])
+            # Directional Blur (Rightward)
+            # Pad on the left by (kernel_val - 1), no padding on right.
+            pad_x_left = kernel_val - 1
+            pad_x_right = 0
             
-            padding_y = kernel_val // 2
-            blurred_mask = F.conv2d(blurred_mask, kernel_y, padding=(padding_y, 0), groups=mask.shape[1])
+            # Y remains symmetric
+            pad_y_top = kernel_val // 2
+            pad_y_bottom = kernel_val // 2
             
-            logger.debug(f"Applied Gaussian blur with kernel {kernel_val}x{kernel_val} (derived sigma {sigma:.2f}).") # Updated log message
+            # Use 'replicate' or 'constant' padding. Replicate is often better for blur edges.
+            padded_mask = F.pad(mask, (pad_x_left, pad_x_right, pad_y_top, pad_y_bottom), mode='replicate')
+            
+            # Apply X convolution (no padding since we already padded)
+            blurred_mask = F.conv2d(padded_mask, kernel_x, padding=0, groups=mask.shape[1])
+            
+            # Apply Y convolution (no padding since we already padded)
+            blurred_mask = F.conv2d(blurred_mask, kernel_y, padding=0, groups=mask.shape[1])
+            
+            logger.debug(f"Applied directional Gaussian blur (rightward) with kernel {kernel_val}x{kernel_val} (derived sigma {sigma:.2f}).") # Updated log message
             return torch.clamp(blurred_mask, 0.0, 1.0)
         except ValueError:
             logger.error("Invalid input for mask blur parameters. Skipping blur.", exc_info=True)
@@ -257,13 +275,21 @@ class InpaintingGUI(ThemedTk):
             
             kernel_val = kernel_size if kernel_size % 2 == 1 else kernel_size + 1 # Ensure odd
             
+            # Directional Dilation (Rightward)
+            # Pad on the left by (kernel_val - 1), no padding on right.
+            pad_x_left = kernel_val - 1
+            pad_x_right = 0
+            pad_y = kernel_val // 2
+            
+            padded_mask = F.pad(mask, (pad_x_left, pad_x_right, pad_y, pad_y), mode='constant', value=0)
+            
             dilated_mask = F.max_pool2d(
-                mask,
-                kernel_size=(kernel_val, kernel_val), # Use single kernel_val for both dimensions
+                padded_mask,
+                kernel_size=(kernel_val, kernel_val), 
                 stride=1,
-                padding=(kernel_val // 2, kernel_val // 2)
+                padding=0
             )
-            logger.debug(f"Applied mask dilation with kernel ({kernel_val}x{kernel_val}).") # Updated log message
+            logger.debug(f"Applied directional mask dilation (rightward) with kernel ({kernel_val}x{kernel_val}).") # Updated log message
             return dilated_mask
         except ValueError:
             logger.error("Invalid input for mask dilation kernel size. Skipping dilation.", exc_info=True) # Updated log message
@@ -319,7 +345,7 @@ class InpaintingGUI(ThemedTk):
         Ensures all input tensors are on CPU and have matching shapes before blending.
         Expected format: [T, C, H, W] float [0, 1].
         """
-        if not self.enable_post_inpainting_blend.get():
+        if self.blend_mode_var.get() == "None (Raw Inpainting)":
             return inpainted_frames
 
         # Check if temporal (T) and spatial (H, W) dimensions match
@@ -659,7 +685,7 @@ class InpaintingGUI(ThemedTk):
 
 
         # --- Apply Post-Inpainting Blending (if enabled) ---
-        if self.enable_post_inpainting_blend.get():
+        if self.blend_mode_var.get() != "None (Raw Inpainting)":
             logger.debug("Applying post-inpainting blend...")
             frames_output_final = self._apply_post_inpainting_blend(
                 inpainted_frames=frames_output_final,
@@ -846,7 +872,7 @@ class InpaintingGUI(ThemedTk):
             "mask_dilate_kernel_size": self.mask_dilate_kernel_size_var.get(),
             "mask_blur_kernel_size": self.mask_blur_kernel_size_var.get(),
             
-            "enable_post_inpainting_blend": self.enable_post_inpainting_blend.get(),
+            "blend_mode": self.blend_mode_var.get(),
             "enable_color_transfer": self.enable_color_transfer.get(),
         }
         return config
@@ -1271,13 +1297,13 @@ class InpaintingGUI(ThemedTk):
         self.save_config() 
         # messagebox.showinfo("Debug Mode", f"Debug mode is now {'ON' if self.debug_mode_var.get() else 'OFF'}.\nLog level set to {logging.getLevelName(logger.level)}.\n(Restart may be needed for some changes to take full effect).")
     
-    def _toggle_blend_parameters_state(self):
+    def _toggle_blend_parameters_state(self, event=None):
         """Enables or disables mask processing parameter entry widgets based on the blend toggle."""
-        state = tk.NORMAL if self.enable_post_inpainting_blend.get() else tk.DISABLED
+        state = tk.NORMAL if self.blend_mode_var.get() != "None (Raw Inpainting)" else tk.DISABLED
         for widget in self.mask_param_widgets:
             widget.config(state=state)
         # We might also want to disable the blending execution if the toggle is off,
-        # but the `if not self.enable_post_inpainting_blend.get(): return inpainted_frames`
+        # but the `if self.blend_mode_var.get() == "None (Raw Inpainting)": return inpainted_frames`
         # check in `_apply_post_inpainting_blend` already handles this.
         # This function primarily affects the GUI state.
         logger.debug(f"Blend parameters state set to: {state}")
@@ -1409,12 +1435,15 @@ class InpaintingGUI(ThemedTk):
 
         current_row = 0 # Reset row counter for post_process_frame
 
-        # Row 0: Enable Post-Inpainting Blend Checkbox
-        blend_enable_check = ttk.Checkbutton(post_process_frame, text="Enable Post-Inpainting Blend", 
-                                             variable=self.enable_post_inpainting_blend, 
-                                             command=self._toggle_blend_parameters_state)
-        blend_enable_check.grid(row=current_row, column=0, columnspan=4, sticky="w", padx=5, pady=2) # Spans all 4 columns
-        Tooltip(blend_enable_check, self.help_data.get("enable_post_inpainting_blend", ""))
+        # Row 0: Blend Mode Combobox
+        blend_mode_label = ttk.Label(post_process_frame, text="Blend Mode:")
+        blend_mode_label.grid(row=current_row, column=0, sticky="w", padx=5, pady=2)
+        
+        self.blend_mode_dropdown = ttk.Combobox(post_process_frame, textvariable=self.blend_mode_var, state="readonly", width=35)
+        self.blend_mode_dropdown['values'] = ("None (Raw Inpainting)", "Directional Blend (Recommended)")
+        self.blend_mode_dropdown.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=5, pady=2)
+        self.blend_mode_dropdown.bind("<<ComboboxSelected>>", self._toggle_blend_parameters_state)
+        Tooltip(self.blend_mode_dropdown, "Select 'None' to use raw AI inpainting, or 'Directional Blend' to seamlessly merge the original high-res foreground with the inpainted background without halos.")
 
         color_transfer_check = ttk.Checkbutton(post_process_frame, text="Enable Color Transfer", 
                                                variable=self.enable_color_transfer,
@@ -1843,7 +1872,7 @@ class InpaintingGUI(ThemedTk):
         self.mask_dilate_kernel_size_var.set("5")
         self.mask_blur_kernel_size_var.set("7")
 
-        self.enable_post_inpainting_blend.set(False) # Default state is OFF
+        self.blend_mode_var.set("Directional Blend (Recommended)") # Default state
         self.enable_color_transfer.set(True) # Default state is ON
         
         # Crucially, call the function to disable the entry fields if the blend toggle is now False

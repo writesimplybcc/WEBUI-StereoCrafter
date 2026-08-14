@@ -21,7 +21,7 @@ from ..base.base_ui import BaseWebUI
 from core.common.cli_utils import draw_progress_bar
 from core.common.gpu_utils import release_cuda_memory, CUDA_AVAILABLE
 from core.common.video_io import get_video_stream_info, encode_frames_to_mp4, start_ffmpeg_pipe_process
-from core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph
+from core.common.image_processing import apply_color_transfer, apply_dubois_anaglyph, apply_optimized_anaglyph, apply_dubois_anaglyph_torch
 from dependency.stereocrafter_util import get_gpu_memory_info, get_vram_config
 import logging
 
@@ -735,7 +735,7 @@ class MergingWebUI:
                         output_format_input = gr.Dropdown(
                             choices=["Full SBS (Left-Right)", "Double SBS", "Half SBS (Left-Right)", 
                                     "Full SBS Cross-eye (Right-Left)", "Anaglyph (Red/Cyan)", 
-                                    "Anaglyph Half-Color", "Right-Eye Only"],
+                                    "Anaglyph Half-Color", "Anaglyph (Dubois)", "Right-Eye Only"],
                             value=self.output_format,
                             label="Output Format"
                         )
@@ -1363,6 +1363,8 @@ class MergingWebUI:
                         left_gray = original_left[:, 0] * 0.299 + original_left[:, 1] * 0.587 + original_left[:, 2] * 0.114
                         left_gray = left_gray.unsqueeze(1)
                         final_chunk = torch.cat([left_gray, blended_right[:, 1:3]], dim=1)
+                    elif output_format_current == "Anaglyph (Dubois)":
+                        final_chunk = apply_dubois_anaglyph_torch(original_left, blended_right)
                     else:
                         final_chunk = blended_right
 

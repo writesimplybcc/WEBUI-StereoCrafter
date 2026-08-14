@@ -21,7 +21,7 @@ from dependency.stereocrafter_util import (
     Tooltip, logger, get_video_stream_info, draw_progress_bar,
     release_cuda_memory, set_util_logger_level, encode_frames_to_mp4,
     read_video_frames_decord, start_ffmpeg_pipe_process, apply_color_transfer,
-    create_single_slider_with_label_updater, apply_dubois_anaglyph, apply_optimized_anaglyph
+    create_single_slider_with_label_updater, apply_dubois_anaglyph, apply_optimized_anaglyph, apply_dubois_anaglyph_torch
 )
 from dependency.video_previewer import VideoPreviewer
 
@@ -32,16 +32,23 @@ def apply_mask_dilation(mask: torch.Tensor, kernel_size: int, use_gpu: bool = Tr
     if kernel_size <= 0: return mask
     kernel_val = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
     
+    pad_x_left = kernel_val - 1
+    pad_x_right = 0
+    pad_y = kernel_val // 2
+    
     if use_gpu:
-        padding = kernel_val // 2
-        return F.max_pool2d(mask, kernel_size=kernel_val, stride=1, padding=padding)
+        padded_mask = F.pad(mask, (pad_x_left, pad_x_right, pad_y, pad_y), mode='constant', value=0)
+        return F.max_pool2d(padded_mask, kernel_size=kernel_val, stride=1, padding=0)
     else:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_val, kernel_val))
         processed_frames = []
         for t in range(mask.shape[0]):
             frame_np = (mask[t].squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-            dilated_np = cv2.dilate(frame_np, kernel, iterations=1)
-            dilated_tensor = torch.from_numpy(dilated_np).float() / 255.0
+            padded_np = np.pad(frame_np, ((pad_y, pad_y), (pad_x_left, pad_x_right)), mode='constant')
+            dilated_np = cv2.dilate(padded_np, kernel, iterations=1)
+            h, w = frame_np.shape
+            cropped_np = dilated_np[pad_y:pad_y+h, pad_x_left:pad_x_left+w]
+            dilated_tensor = torch.from_numpy(cropped_np).float() / 255.0
             processed_frames.append(dilated_tensor.unsqueeze(0))
         return torch.stack(processed_frames).to(mask.device)
 
@@ -54,15 +61,28 @@ def apply_gaussian_blur(mask: torch.Tensor, kernel_size: int, use_gpu: bool = Tr
         ax = torch.arange(-kernel_val // 2 + 1., kernel_val // 2 + 1., device=mask.device)
         gauss = torch.exp(-(ax ** 2) / (2 * sigma ** 2))
         kernel_1d = (gauss / gauss.sum()).view(1, 1, 1, kernel_val)
-        blurred_mask = F.conv2d(mask, kernel_1d, padding=(0, kernel_val // 2), groups=mask.shape[1])
-        blurred_mask = F.conv2d(blurred_mask, kernel_1d.permute(0, 1, 3, 2), padding=(kernel_val // 2, 0), groups=mask.shape[1])
+        
+        pad_x_left = kernel_val - 1
+        pad_x_right = 0
+        pad_y = kernel_val // 2
+        
+        padded_mask = F.pad(mask, (pad_x_left, pad_x_right, pad_y, pad_y), mode='replicate')
+        
+        blurred_mask = F.conv2d(padded_mask, kernel_1d, padding=0, groups=mask.shape[1])
+        blurred_mask = F.conv2d(blurred_mask, kernel_1d.permute(0, 1, 3, 2), padding=0, groups=mask.shape[1])
         return torch.clamp(blurred_mask, 0.0, 1.0)
     else:
         processed_frames = []
+        pad_x_left = kernel_val - 1
+        pad_x_right = 0
+        pad_y = kernel_val // 2
         for t in range(mask.shape[0]):
             frame_np = (mask[t].squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-            blurred_np = cv2.GaussianBlur(frame_np, (kernel_val, kernel_val), 0)
-            blurred_tensor = torch.from_numpy(blurred_np).float() / 255.0
+            padded_np = np.pad(frame_np, ((pad_y, pad_y), (pad_x_left, pad_x_right)), mode='edge')
+            blurred_np = cv2.GaussianBlur(padded_np, (kernel_val, kernel_val), 0)
+            h, w = frame_np.shape
+            cropped_np = blurred_np[pad_y:pad_y+h, pad_x_left:pad_x_left+w]
+            blurred_tensor = torch.from_numpy(cropped_np).float() / 255.0
             processed_frames.append(blurred_tensor.unsqueeze(0))
         return torch.stack(processed_frames).to(mask.device)
 
@@ -609,7 +629,7 @@ class MergingGUI(ThemedTk):
 
         # --- NEW: Output Format Dropdown ---
         ttk.Label(options_frame, text="Output Format:").pack(side="left", padx=(15, 5))
-        output_formats = ["Full SBS (Left-Right)", "Double SBS", "Half SBS (Left-Right)", "Full SBS Cross-eye (Right-Left)", "Anaglyph (Red/Cyan)", "Anaglyph Half-Color", "Right-Eye Only"]
+        output_formats = ["Full SBS (Left-Right)", "Double SBS", "Half SBS (Left-Right)", "Full SBS Cross-eye (Right-Left)", "Anaglyph (Red/Cyan)", "Anaglyph Half-Color", "Anaglyph (Dubois)", "Right-Eye Only"]
         output_format_combo = ttk.Combobox(options_frame, textvariable=self.output_format_var, values=output_formats, state="readonly", width=28)
         output_format_combo.pack(side="left", padx=5)
         self._create_hover_tooltip(output_format_combo, "output_format")
@@ -1059,7 +1079,7 @@ class MergingGUI(ThemedTk):
                     output_width = hires_W
                     output_suffix = "_merged_half_sbs.mp4"
                     # Perceived width is single eye, as player will stretch it.
-                elif output_format in ["Anaglyph (Red/Cyan)", "Anaglyph Half-Color"]:
+                elif output_format in ["Anaglyph (Red/Cyan)", "Anaglyph Half-Color", "Anaglyph (Dubois)"]:
                     output_width = hires_W
                     output_suffix = "_merged_anaglyph.mp4"
                     # Perceived width is the full output width
@@ -1197,6 +1217,8 @@ class MergingGUI(ThemedTk):
                             left_gray,                        # R channel from grayscale left
                             blended_right_eye[:, 1:3, :, :]   # G, B channels from right
                         ], dim=1)
+                    elif output_format == "Anaglyph (Dubois)":
+                        final_chunk = apply_dubois_anaglyph_torch(original_left, blended_right_eye)
                     else:
                         # Default to Right-Eye Only
                         final_chunk = blended_right_eye
