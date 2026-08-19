@@ -179,7 +179,7 @@ class DepthCrafterGUI:
         self.current_input_mode = "batch_folder" # "batch_folder", "single_video_file", "single_image_file", "image_sequence_folder"
         self.single_file_mode_active = False # True if a single file/sequence folder is explicitly loaded
         self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
-        self.use_local_models_only_var = tk.BooleanVar(value=False)
+        self.use_local_models_only_var = tk.BooleanVar(value=True)
         self.status_message_var = tk.StringVar(value="Ready")
         self.current_filename_var = tk.StringVar(value="N/A")
         self.current_resolution_var = tk.StringVar(value="N/A")
@@ -1621,6 +1621,28 @@ class DepthCrafterGUI:
         
         self.widgets_to_disable_during_processing.extend([self.entry_output_dir, self.browse_output_btn])
 
+        # --- Source Prep & Cropping Frame (New) ---
+        crop_frame = ttk.LabelFrame(self.root, text="Source Prep & Cropping (Auto-Crop Black Bars)")
+        crop_frame.pack(fill="x", padx=10, pady=5, expand=False)
+        
+        self.crop_status_var = tk.StringVar(value="Aspect Ratio: Unknown | Ready to detect")
+        ttk.Label(crop_frame, textvariable=self.crop_status_var).grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        
+        self.btn_detect_crop = ttk.Button(crop_frame, text="Detect Aspect Ratio & Crop", command=self.detect_and_preview_crop)
+        self.btn_detect_crop.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.widgets_to_disable_during_processing.append(self.btn_detect_crop)
+        
+        self.btn_preview_crop = ttk.Button(crop_frame, text="Open 1-Second Preview in Default Player", command=self.open_crop_preview, state=tk.DISABLED)
+        self.btn_preview_crop.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        
+        self.apply_crop_var = tk.BooleanVar(value=True)
+        self.cb_apply_crop = ttk.Checkbutton(crop_frame, text="Apply crop before processing", variable=self.apply_crop_var)
+        self.cb_apply_crop.grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        self.widgets_to_disable_during_processing.append(self.cb_apply_crop)
+        
+        self.current_crop_params = None
+        self.current_crop_preview_path = None
+
         # --- Settings Container Frame (New) ---
         # This frame will hold the Main Params, Frame & Segment Control, Merged Output, and Secondary Output frames.
         settings_container_frame = ttk.Frame(self.root)
@@ -2148,6 +2170,82 @@ class DepthCrafterGUI:
         self.processing_thread = threading.Thread(target=self._execute_re_merge_wrapper, args=(args,), daemon=True); self.processing_thread.start()
         self.root.after(100, self.process_queue)
 
+    def detect_and_preview_crop(self):
+        input_path_str = self.input_dir_or_file_var.get()
+        if not input_path_str or not os.path.exists(input_path_str):
+            messagebox.showerror("Error", "Please select a valid input file or folder first.")
+            return
+            
+        self.btn_detect_crop.config(state=tk.DISABLED)
+        self.crop_status_var.set("Detecting aspect ratio... please wait.")
+        self.root.update_idletasks()
+        
+        mode, _ = self._determine_input_mode_from_path(input_path_str)
+        test_file = input_path_str
+        if mode == "batch_folder":
+            # find first valid video
+            for item_name in os.listdir(input_path_str):
+                item_full_path = os.path.join(input_path_str, item_name)
+                if os.path.isfile(item_full_path):
+                    ext = os.path.splitext(item_name)[1].lower()
+                    if any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
+                        test_file = item_full_path
+                        break
+        
+        if os.path.isdir(test_file):
+             self.crop_status_var.set("Could not find a video file to test.")
+             self.btn_detect_crop.config(state=tk.NORMAL)
+             return
+             
+        def _bg_detect():
+            from core.common.video_io import VideoIO
+            try:
+                params = VideoIO.detect_black_bars(test_file)
+                self.current_crop_params = params
+                
+                if params["type"] in ("none", "fullframe"):
+                    status = "Fullframe (No crop needed)"
+                    self.current_crop_preview_path = None
+                    self.root.after(0, lambda: self.btn_preview_crop.config(state=tk.DISABLED))
+                else:
+                    status = f"{params['type'].capitalize()} - Cropping to {params['crop_w']}x{params['crop_h']}"
+                    
+                    # Generate 1s preview inside Preview folder
+                    preview_dir = os.path.join(os.path.dirname(test_file), "Preview")
+                    os.makedirs(preview_dir, exist_ok=True)
+                    preview_path = os.path.join(preview_dir, f"crop_preview_{os.path.splitext(os.path.basename(test_file))[0]}.mp4")
+                    VideoIO.generate_crop_preview_video(test_file, preview_path, params)
+                    self.current_crop_preview_path = preview_path
+                    self.root.after(0, lambda: self.btn_preview_crop.config(state=tk.NORMAL))
+                    
+                    # Update target resolution to match detected crop resolution
+                    if hasattr(self, 'target_width'):
+                        self.root.after(0, lambda: self.target_width.set(params['crop_w']))
+                    if hasattr(self, 'target_height'):
+                        self.root.after(0, lambda: self.target_height.set(params['crop_h']))
+                    
+                self.root.after(0, lambda: self.crop_status_var.set(status))
+            except Exception as e:
+                self.root.after(0, lambda: self.crop_status_var.set(f"Error: {e}"))
+            finally:
+                self.root.after(0, lambda: self.btn_detect_crop.config(state=tk.NORMAL))
+                
+        threading.Thread(target=_bg_detect, daemon=True).start()
+
+    def open_crop_preview(self):
+        if self.current_crop_preview_path and os.path.exists(self.current_crop_preview_path):
+            import subprocess
+            import platform
+            try:
+                if platform.system() == 'Windows':
+                    os.startfile(self.current_crop_preview_path)
+                elif platform.system() == 'Darwin':
+                    subprocess.Popen(['open', self.current_crop_preview_path])
+                else:
+                    subprocess.Popen(['xdg-open', self.current_crop_preview_path])
+            except Exception as e:
+                _logger.error(f"Failed to open preview: {e}")
+
     def start_thread(self):
         # Check if processing is already running
         if self.processing_thread and self.processing_thread.is_alive():
@@ -2165,6 +2263,39 @@ class DepthCrafterGUI:
             _logger.error(f"GUI: Input path field is empty or path does not exist: {input_path_str}")
             messagebox.showerror("Error", f"Input path does not exist: {input_path_str}")
             return
+            
+        # --- CROP PREPROCESSING STEP ---
+        if hasattr(self, 'apply_crop_var') and self.apply_crop_var.get() and self.current_crop_params and self.current_crop_params.get("type") not in ("none", "fullframe"):
+            _logger.info("Executing pre-process cropping...")
+            self.status_message_var.set("Cropping source videos...")
+            self.root.update_idletasks()
+            
+            from core.common.video_io import VideoIO
+            
+            mode, _ = self._determine_input_mode_from_path(input_path_str)
+            files_to_crop = []
+            if mode == "batch_folder":
+                for item_name in os.listdir(input_path_str):
+                    if item_name.endswith("_cropped.mp4"): continue
+                    item_full_path = os.path.join(input_path_str, item_name)
+                    if os.path.isfile(item_full_path):
+                        ext = os.path.splitext(item_name)[1].lower()
+                        if any(ext in vid_ext.replace("*", "") for vid_ext in self.VIDEO_EXTENSIONS):
+                            files_to_crop.append(item_full_path)
+            elif mode == "single_video_file":
+                if not input_path_str.endswith("_cropped.mp4"):
+                    files_to_crop.append(input_path_str)
+                    
+            for vp in files_to_crop:
+                base_dir = os.path.dirname(vp)
+                stem = os.path.splitext(os.path.basename(vp))[0]
+                out_path = os.path.join(base_dir, f"{stem}_cropped.mp4")
+                if not os.path.exists(out_path):
+                    _logger.info(f"Cropping {vp} to {out_path}")
+                    VideoIO.crop_video_ffmpeg(vp, out_path, self.current_crop_params)
+            
+            _logger.info("Cropping complete.")
+        # -------------------------------
         
         # --- ADD THESE LINES HERE ---
         _logger.info("Scanning input folder: Please wait...")
@@ -2201,7 +2332,10 @@ class DepthCrafterGUI:
             self.effective_move_original_on_completion = self.MOVE_ORIGINAL_TO_FINISHED_FOLDER_ON_COMPLETION
             if self.current_input_mode == "batch_folder":
                 try:
-                    for item_name in os.listdir(input_path_str):
+                    all_items = os.listdir(input_path_str)
+                    from core.common.video_io import VideoIO
+                    all_items = VideoIO.filter_cropped_videos(all_items)
+                    for item_name in all_items:
                         item_full_path = os.path.join(input_path_str, item_name)
                         if os.path.isfile(item_full_path):
                             ext = os.path.splitext(item_name)[1].lower()

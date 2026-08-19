@@ -7557,6 +7557,8 @@ class SplatterGUI(ThemedTk):
                 input_videos.extend(
                     glob.glob(os.path.join(input_source_clips_path, ext))
                 )
+            from core.common.video_io import VideoIO
+            input_videos = VideoIO.filter_cropped_videos(input_videos)
             input_videos = sorted(input_videos)
 
         else:

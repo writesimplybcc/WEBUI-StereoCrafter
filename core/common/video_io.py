@@ -13,6 +13,7 @@ import logging
 from typing import Optional, Tuple
 
 import subprocess  # Needed for FFmpeg-based preview readers
+import cv2
 
 import numpy as np
 
@@ -97,6 +98,154 @@ class VideoIO:
             Frames as numpy array [N, H, W, C]
         """
         return reader.get_batch(indices).asnumpy()
+
+    @staticmethod
+    def detect_black_bars(video_path: str, num_samples: int = 5) -> dict:
+        """Analyze a video to detect black bars and return crop parameters.
+        
+        Args:
+            video_path: Path to the video file
+            num_samples: Number of frames to sample throughout the video
+            
+        Returns:
+            Dictionary with crop parameters: crop_x, crop_y, crop_w, crop_h, type
+        """
+        if not video_path or not os.path.exists(video_path):
+            return {"type": "none", "crop_x": 0, "crop_y": 0, "crop_w": 0, "crop_h": 0}
+            
+        try:
+            reader = VideoReader(video_path, ctx=cpu(0))
+            total_frames = len(reader)
+            if total_frames == 0:
+                return {"type": "none"}
+                
+            # Sample frames evenly across the video
+            indices = np.linspace(0, total_frames - 1, min(num_samples, total_frames), dtype=int).tolist()
+            frames = reader.get_batch(indices).asnumpy()
+            
+            h, w = frames[0].shape[:2]
+            
+            # Combine all sampled frames (max pixel value across time)
+            # This ensures we don't accidentally crop out dark scenes
+            max_frame = np.max(frames, axis=0)
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(max_frame, cv2.COLOR_RGB2GRAY)
+            
+            # Threshold to find non-black pixels
+            _, thresh = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
+            
+            # Find bounding box
+            coords = cv2.findNonZero(thresh)
+            if coords is None:
+                return {"type": "none", "crop_w": w, "crop_h": h, "crop_x": 0, "crop_y": 0}
+                
+            x, y, bw, bh = cv2.boundingRect(coords)
+            
+            # Ensure dimensions are even numbers for FFmpeg compatibility
+            if bw % 2 != 0:
+                bw = max(2, bw - 1)
+            if bh % 2 != 0:
+                bh = max(2, bh - 1)
+                
+            # If the crop is very close to the full frame, consider it fullframe
+            if bw >= w - 10 and bh >= h - 10:
+                return {"type": "fullframe", "crop_w": w, "crop_h": h, "crop_x": 0, "crop_y": 0}
+                
+            # Determine type
+            crop_type = "letterbox" if bw >= w - 10 else "pillarbox"
+            
+            return {
+                "type": crop_type,
+                "crop_x": x,
+                "crop_y": y,
+                "crop_w": bw,
+                "crop_h": bh,
+                "original_w": w,
+                "original_h": h
+            }
+        except Exception as e:
+            logger.error(f"Error detecting black bars: {e}")
+            return {"type": "none"}
+
+    @staticmethod
+    def generate_crop_preview_video(video_path: str, preview_path: str, crop_params: dict):
+        """Generate a 1-second preview video of the crop using FFmpeg."""
+        if not crop_params or crop_params.get("type") in ("none", "fullframe"):
+            # If no crop needed, just copy a 1 second chunk
+            cmd = [
+                "ffmpeg", "-y", "-i", video_path, "-t", "1",
+                "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", preview_path
+            ]
+        else:
+            w, h, x, y = crop_params["crop_w"], crop_params["crop_h"], crop_params["crop_x"], crop_params["crop_y"]
+            crop_filter = f"crop={w}:{h}:{x}:{y}"
+            cmd = [
+                "ffmpeg", "-y", "-i", video_path, "-t", "1", "-vf", crop_filter,
+                "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", preview_path
+            ]
+            
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            logger.error(f"Failed to generate crop preview: {e}")
+
+    @staticmethod
+    def crop_video_ffmpeg(input_path: str, output_path: str, crop_params: dict) -> bool:
+        """Crop the entire video using FFmpeg."""
+        if not crop_params or crop_params.get("type") in ("none", "fullframe"):
+            return False
+            
+        w, h, x, y = crop_params["crop_w"], crop_params["crop_h"], crop_params["crop_x"], crop_params["crop_y"]
+        crop_filter = f"crop={w}:{h}:{x}:{y}"
+        
+        cmd = [
+            "ffmpeg", "-y", "-i", input_path, "-vf", crop_filter,
+            "-c:v", "libx264", "-crf", "17", "-preset", "fast", "-c:a", "copy", output_path
+        ]
+        
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to crop video: {e}")
+            return False
+
+    @staticmethod
+    def filter_cropped_videos(file_list: list) -> list:
+        """Filter a list of filenames or paths, prioritizing _cropped versions over originals.
+        
+        If 'MyVideo_cropped.mp4' exists in the list, 'MyVideo.mp4' will be removed.
+        
+        Args:
+            file_list: List of filenames or paths (strings)
+            
+        Returns:
+            Filtered list
+        """
+        filtered = []
+        basenames = set()
+        
+        # First pass: collect all base names without extension
+        for f in file_list:
+            base = os.path.splitext(os.path.basename(f))[0]
+            basenames.add(base)
+            
+        # Second pass: filter out originals if _cropped exists
+        for f in file_list:
+            base = os.path.splitext(os.path.basename(f))[0]
+            
+            # Skip any crop preview files entirely so they are never processed
+            if base.startswith("crop_preview_"):
+                continue
+                
+            if not base.endswith("_cropped"):
+                if f"{base}_cropped" in basenames:
+                    continue # Skip original because cropped exists
+            filtered.append(f)
+            
+        return filtered
+
 
 
 class FFmpegRGBPipeReader:

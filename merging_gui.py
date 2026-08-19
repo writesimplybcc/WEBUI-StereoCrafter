@@ -956,6 +956,8 @@ class MergingGUI(ThemedTk):
             return
 
         inpainted_videos = sorted(glob.glob(os.path.join(settings["inpainted_folder"], "*.mp4")))
+        from core.common.video_io import VideoIO
+        inpainted_videos = VideoIO.filter_cropped_videos(inpainted_videos)
         if not inpainted_videos:
             self.after(0, lambda: messagebox.showinfo("Info", "No .mp4 files found in the inpainted video folder."))
             self.after(0, self.processing_done)

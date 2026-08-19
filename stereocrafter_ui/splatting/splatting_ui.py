@@ -3190,28 +3190,46 @@ class SplatterWebUI:
             traceback.print_exc()
             return None, f"❌ Error: {str(e)}", gr.Slider()
     
-    def refresh_video_list(self):
+    def refresh_video_list(self, current_checkbox_state, auto_detect=False):
         """
         Refresh the video list dropdown with files from input folder.
-        Returns: (updated_dropdown_choices, status_message)
+        Returns: (updated_dropdown_choices, updated_checkbox, status_message)
         """
         try:
             video_files = self._scan_video_files(self.input_source_clips)
             
             if not video_files:
-                return gr.Dropdown(choices=[], value=None), "⚠️ No video files found in input folder"
+                return gr.Dropdown(choices=[], value=None), gr.update(value=False), "⚠️ No video files found in input folder"
             
             # Extract just the filenames for the dropdown
             video_names = [os.path.basename(f) for f in video_files]
+            has_cropped = any(name.endswith('_cropped.mp4') for name in video_names)
+            
+            new_checkbox_state = current_checkbox_state
+            if auto_detect:
+                new_checkbox_state = has_cropped
+                
+            if new_checkbox_state:
+                cropped_names = [name for name in video_names if name.endswith('_cropped.mp4')]
+                if cropped_names:
+                    video_names = cropped_names
+                else:
+                    new_checkbox_state = False
             
             status = f"✅ Found {len(video_names)} video(s)"
             
             # Return dropdown with choices and select first one by default
-            return gr.Dropdown(choices=video_names, value=video_names[0] if video_names else None), status
+            return gr.Dropdown(choices=video_names, value=video_names[0] if video_names else None), gr.update(value=new_checkbox_state), status
             
         except Exception as e:
             logger.error(f"Video list refresh error: {e}")
-            return gr.Dropdown(choices=[], value=None), f"❌ Error: {str(e)}"
+            return gr.Dropdown(choices=[], value=None), gr.update(), f"❌ Error: {str(e)}"
+            
+    def refresh_video_list_auto(self, cb_state):
+        return self.refresh_video_list(cb_state, auto_detect=True)
+        
+    def refresh_video_list_manual(self, cb_state):
+        return self.refresh_video_list(cb_state, auto_detect=False)
     
     def _get_auto_scaled_params(self, width: int) -> tuple[float, float, int]:
         """Returns auto-scaled (disparity, dilate_x, blur_x) based on video width."""
@@ -4759,6 +4777,7 @@ class SplatterWebUI:
                             interactive=True,
                             scale=4
                         )
+                        self.only_cropped_checkbox = gr.Checkbox(label="Only _cropped", value=True, scale=1)
                         self.refresh_video_list_button = gr.Button("🔄", size="sm", scale=0, min_width=40)
                         self.detect_frames_button = gr.Button("🔍 Detect", size="sm", scale=1)
                     with gr.Row():
@@ -4812,11 +4831,13 @@ class SplatterWebUI:
                 outputs=[self.depth_map_subfolders_comp]
             )
             
+
+
             # Auto-refresh video list when input folder changes
             self.input_source_clips_comp.change(
-                fn=self.refresh_video_list,
-                inputs=[],
-                outputs=[self.preview_video_selector, self.status_label]
+                fn=self.refresh_video_list_auto,
+                inputs=[self.only_cropped_checkbox],
+                outputs=[self.preview_video_selector, self.only_cropped_checkbox, self.status_label]
             ).then(
                 fn=self.auto_detect_low_res_from_input,
                 inputs=[self.input_source_clips_comp],
@@ -4908,9 +4929,16 @@ class SplatterWebUI:
             
             # Manual preview handlers
             self.refresh_video_list_button.click(
-                fn=self.refresh_video_list,
-                inputs=[],
-                outputs=[self.preview_video_selector, self.status_label]
+                fn=self.refresh_video_list_manual,
+                inputs=[self.only_cropped_checkbox],
+                outputs=[self.preview_video_selector, self.only_cropped_checkbox, self.status_label]
+            )
+
+            # Refresh list when checkbox changes
+            self.only_cropped_checkbox.change(
+                fn=self.refresh_video_list_manual,
+                inputs=[self.only_cropped_checkbox],
+                outputs=[self.preview_video_selector, self.only_cropped_checkbox, self.status_label]
             )
             
             self.detect_frames_button.click(

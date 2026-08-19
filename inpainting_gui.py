@@ -81,6 +81,9 @@ class InpaintingGUI(ThemedTk):
         self.mask_morph_kernel_size_var = tk.StringVar(value=str(self.app_config.get("mask_morph_kernel_size", 0.0)))
         self.mask_dilate_kernel_size_var = tk.StringVar(value=str(self.app_config.get("mask_dilate_kernel_size", 5)))        
         self.mask_blur_kernel_size_var = tk.StringVar(value=str(self.app_config.get("mask_blur_kernel_size", 10)))
+        
+        # --- NEW: Padding ---
+        self.pad_to_16_9_var = tk.BooleanVar(value=self.app_config.get("pad_to_16_9", True))
 
         # Handle legacy boolean config if present
         legacy_blend = self.app_config.get("enable_post_inpainting_blend", None)
@@ -871,6 +874,7 @@ class InpaintingGUI(ThemedTk):
             "mask_morph_kernel_size": self.mask_morph_kernel_size_var.get(),
             "mask_dilate_kernel_size": self.mask_dilate_kernel_size_var.get(),
             "mask_blur_kernel_size": self.mask_blur_kernel_size_var.get(),
+            "pad_to_16_9": self.pad_to_16_9_var.get(),
             
             "blend_mode": self.blend_mode_var.get(),
             "enable_color_transfer": self.enable_color_transfer.get(),
@@ -1482,7 +1486,12 @@ class InpaintingGUI(ThemedTk):
         blur_kernel_entry = ttk.Entry(post_process_frame, textvariable=self.mask_blur_kernel_size_var, width=10)
         blur_kernel_entry.grid(row=current_row, column=3, sticky="w", padx=5)
         self.mask_param_widgets.append(blur_kernel_entry) # Store reference
-        # current_row += 1 # No need to increment here, post_process_frame is done
+        current_row += 1
+        
+        # Row 3: Pad to 16:9
+        pad_check = ttk.Checkbutton(post_process_frame, text="Pad Output to 16:9 (SBS)", variable=self.pad_to_16_9_var)
+        pad_check.grid(row=current_row, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        Tooltip(pad_check, "Automatically pads the output video frames to exactly 16:9 aspect ratio before encoding. Useful if you cropped the video prior to processing.")
         
         # Initialize the state of blend parameters immediately after creation
         self._toggle_blend_parameters_state()
@@ -1784,6 +1793,34 @@ class InpaintingGUI(ThemedTk):
                 self.after(0, lambda: update_info_callback(base_video_name, "N/A", "0 (Empty Final)", overlap, original_input_blend_strength))
             return False, None
             
+        # --- NEW: 16:9 PyTorch Tensor Padding for SBS Video ---
+        if hasattr(self, 'pad_to_16_9_var') and self.pad_to_16_9_var.get():
+            N, C, H, W = final_output_frames_for_encoding.shape
+            current_single_eye_w = W // 2
+            
+            target_single_eye_w = int(round((H * 16.0) / 9.0))
+            if target_single_eye_w % 2 != 0:
+                target_single_eye_w += 1
+                
+            if target_single_eye_w > current_single_eye_w:
+                total_pad_per_eye = target_single_eye_w - current_single_eye_w
+                pad_left = total_pad_per_eye // 2
+                pad_right = total_pad_per_eye - pad_left
+                
+                logger.info(f"Padding output from {W}x{H} (Single Eye: {current_single_eye_w}x{H}) to {target_single_eye_w * 2}x{H} (Single Eye: {target_single_eye_w}x{H}) to achieve 16:9 per eye.")
+                
+                left_eye_frames = final_output_frames_for_encoding[:, :, :, :current_single_eye_w]
+                right_eye_frames = final_output_frames_for_encoding[:, :, :, current_single_eye_w:]
+                
+                import torch.nn.functional as F
+                padded_left_eye = F.pad(left_eye_frames, (pad_left, pad_right, 0, 0), mode='constant', value=0.0)
+                padded_right_eye = F.pad(right_eye_frames, (pad_left, pad_right, 0, 0), mode='constant', value=0.0)
+                
+                final_output_frames_for_encoding = torch.cat([padded_left_eye, padded_right_eye], dim=3)
+            else:
+                logger.debug(f"Padding requested but current single-eye width ({current_single_eye_w}) is >= target 16:9 width ({target_single_eye_w}). Skipping padding.")
+        # ----------------------------------------------------
+
         # 6. ENCODING
         temp_png_dir = os.path.join(save_dir, f"temp_inpainted_pngs_{video_name_for_output}_{os.getpid()}")
         os.makedirs(temp_png_dir, exist_ok=True)
@@ -1955,6 +1992,8 @@ class InpaintingGUI(ThemedTk):
                 offload_type=offload_type
             )
             input_videos = sorted(glob.glob(os.path.join(input_folder, "*.mp4")))
+            from core.common.video_io import VideoIO
+            input_videos = VideoIO.filter_cropped_videos(input_videos)
             if not input_videos:
                 self.after(0, lambda: messagebox.showinfo("Info", "No .mp4 files found in input folder"))
                 self.after(0, self.processing_done)

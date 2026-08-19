@@ -1169,6 +1169,40 @@ class MergingWebUI:
                     hires_H, hires_W = H_splat, W_splat // 2
                 else:
                     hires_H, hires_W = H_splat // 2, W_splat // 2
+                
+                # --- Auto-Detect Padding from Inpainted Video ---
+                sample_inpainted = inpainted_reader[0].asnumpy()
+                H_inp, W_inp, _ = sample_inpainted.shape
+                single_eye_inp_W = W_inp // 2 if is_sbs_input else W_inp
+
+                pad_left_val = 0
+                pad_right_val = 0
+                
+                inp_aspect = single_eye_inp_W / H_inp
+                splat_aspect = hires_W / hires_H
+                
+                if inp_aspect > splat_aspect * 1.02: # Allow small tolerance
+                    target_single_eye_w = int(round(hires_H * inp_aspect))
+                    if target_single_eye_w % 2 != 0:
+                        target_single_eye_w += 1
+                    
+                    total_pad = target_single_eye_w - hires_W
+                    pad_left_val = total_pad // 2
+                    pad_right_val = total_pad - pad_left_val
+                    print(f"[DEBUG] Auto-detected padded input! Padding splatted video from {hires_W}x{hires_H} to {target_single_eye_w}x{hires_H} to perfectly match inpainted aspect ratio.")
+                    hires_W = target_single_eye_w
+
+                if pad_to_16_9:
+                    target_16_9_w = int(round((hires_H * 16.0) / 9.0))
+                    if target_16_9_w % 2 != 0:
+                        target_16_9_w += 1
+                    
+                    if target_16_9_w > hires_W:
+                        total_pad = target_16_9_w - hires_W
+                        pad_left_val += total_pad // 2
+                        pad_right_val += total_pad - (total_pad // 2)
+                        print(f"[DEBUG] Force padding output to {target_16_9_w}x{hires_H} to achieve 16:9 per eye.")
+                        hires_W = target_16_9_w
 
                 if original_reader is None and output_format != "Right-Eye Only":
                     # Fallback if original is missing
@@ -1297,7 +1331,24 @@ class MergingWebUI:
                     original_left = original_left.to(dev)
                     warped_original = warped_original.to(dev)
 
-                    # Resize
+                    # --- Pad splatted components and inpainted chunk if requested ---
+                    # Always pad the high-res original components if auto-detection (or manual) found padding
+                    if pad_left_val > 0 or pad_right_val > 0:
+                        original_left = F.pad(original_left, (pad_left_val, pad_right_val, 0, 0), mode='constant', value=0.0)
+                        warped_original = F.pad(warped_original, (pad_left_val, pad_right_val, 0, 0), mode='constant', value=0.0)
+                        mask = F.pad(mask, (pad_left_val, pad_right_val, 0, 0), mode='constant', value=0.0)
+                        
+                    if pad_to_16_9:
+                        # Check if the inpainted chunk itself needs padding (e.g. if the user didn't pad it during inpainting)
+                        curr_h, curr_w = inpainted_chunk.shape[2], inpainted_chunk.shape[3]
+                        target_inp_w = int(round((curr_h * 16.0) / 9.0))
+                        if target_inp_w % 2 != 0: target_inp_w += 1
+                        if target_inp_w > curr_w:
+                            p_total = target_inp_w - curr_w
+                            p_left = p_total // 2
+                            inpainted_chunk = F.pad(inpainted_chunk, (p_left, p_total - p_left, 0, 0), mode='constant', value=0.0)
+
+                    # Resize (now perfectly preserves aspect ratios since both are padded to 16:9 if requested)
                     if inpainted_chunk.shape[2] != hires_H or inpainted_chunk.shape[3] != hires_W:
                         inpainted_chunk = F.interpolate(inpainted_chunk, size=(hires_H, hires_W), mode='bicubic', align_corners=False)
                         mask = F.interpolate(mask, size=(hires_H, hires_W), mode='bilinear', align_corners=False)

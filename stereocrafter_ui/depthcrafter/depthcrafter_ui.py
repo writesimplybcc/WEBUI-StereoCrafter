@@ -218,7 +218,7 @@ class DepthCrafterWebUI(BaseWebUI):
         )
         self.use_local_models_only_var = gr.Checkbox(
             label="Use Local Models Only", 
-            value=False,
+            value=True,
             info="If checked, the model will only attempt to load files from the local Hugging Face cache and will NOT attempt to connect to the Hugging Face Hub for verification or download. This can significantly speed up startup time if models are already cached locally. If a model is not found in the local cache, an error will occur."
         )
         # Resolution Preset Checkboxes
@@ -334,6 +334,19 @@ class DepthCrafterWebUI(BaseWebUI):
             with gr.Row():
                 self.output_dir.render()
         
+        print("[DEBUG] Creating Auto-Crop section...")
+        with gr.Group():
+            gr.Markdown("### Source Prep & Cropping (Auto-Crop Black Bars)")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    self.btn_detect_crop = gr.Button("Detect Aspect Ratio & Crop", variant="secondary")
+                    self.crop_status_var = gr.Textbox(label="Status", value="Ready to detect", interactive=False)
+                    self.apply_crop_var = gr.Checkbox(label="Apply crop before processing", value=True)
+                with gr.Column(scale=1):
+                    self.crop_preview_video = gr.Video(label="Crop Preview (1 Second)", interactive=False)
+                    
+            self.current_crop_params = gr.State(None)
+
         print("[DEBUG] Creating Main Settings container...")
         # Main Settings Container - Use accordions to reduce initial load
         with gr.Row():
@@ -459,6 +472,44 @@ class DepthCrafterWebUI(BaseWebUI):
             outputs=[self.target_width, self.target_height]
         )
 
+        def handle_detect_crop(input_path):
+            if not input_path or not os.path.exists(input_path):
+                return "Error: Please set a valid input path.", gr.update(), None
+                
+            test_file = input_path
+            if os.path.isdir(input_path):
+                import glob
+                video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.webm', '*.flv', '*.gif']
+                video_files = []
+                for ext in video_extensions:
+                    video_files.extend(glob.glob(os.path.join(input_path, ext)))
+                if video_files:
+                    test_file = video_files[0]
+                else:
+                    return "Error: No video found in folder.", gr.update(), None
+            
+            from core.common.video_io import VideoIO
+            try:
+                params = VideoIO.detect_black_bars(test_file)
+                if params["type"] in ("none", "fullframe"):
+                    status = "Fullframe (No crop needed)"
+                    return status, gr.update(value=None), params, gr.update(), gr.update()
+                else:
+                    status = f"{params['type'].capitalize()} - Cropping to {params['crop_w']}x{params['crop_h']}"
+                    preview_dir = os.path.join(os.path.dirname(test_file), "Preview")
+                    os.makedirs(preview_dir, exist_ok=True)
+                    preview_path = os.path.join(preview_dir, f"crop_preview_{os.path.splitext(os.path.basename(test_file))[0]}.mp4")
+                    VideoIO.generate_crop_preview_video(test_file, preview_path, params)
+                    return status, gr.update(value=preview_path), params, params['crop_w'], params['crop_h']
+            except Exception as e:
+                return f"Error: {str(e)}", gr.update(), None, gr.update(), gr.update()
+
+        self.btn_detect_crop.click(
+            fn=handle_detect_crop,
+            inputs=[self.input_dir_or_file_var],
+            outputs=[self.crop_status_var, self.crop_preview_video, self.current_crop_params, self.target_width, self.target_height]
+        )
+
         # Event handlers
         start_btn.click(
             fn=self.start_processing,
@@ -481,7 +532,8 @@ class DepthCrafterWebUI(BaseWebUI):
                 self.robust_norm_high_percentile, self.robust_norm_output_min,
                 self.robust_norm_output_max, self.robust_output_suffix,
                 self.is_depth_far_black, self.disable_xformers_var,
-                self.enable_tiling, self.tile_size, self.tile_overlap
+                self.enable_tiling, self.tile_size, self.tile_overlap,
+                self.apply_crop_var, self.current_crop_params
             ],
             outputs=[self.status_message_var, self.progress]
         )
@@ -539,6 +591,7 @@ class DepthCrafterWebUI(BaseWebUI):
 
     def start_processing(self, *args, ):
         """Starts the depth estimation processing"""
+        import os
         import logging
         logger = logging.getLogger(__name__)
 
@@ -561,7 +614,8 @@ class DepthCrafterWebUI(BaseWebUI):
          robust_norm_high_percentile, robust_norm_output_min,
          robust_norm_output_max, robust_output_suffix,
          is_depth_far_black, disable_xformers,
-         enable_tiling, tile_size, tile_overlap) = args
+         enable_tiling, tile_size, tile_overlap,
+         apply_crop_var, current_crop_params) = args
 
         try:
             # Parameter validation and type conversion
@@ -569,6 +623,34 @@ class DepthCrafterWebUI(BaseWebUI):
             logger.info("Starting DepthCrafter processing...")
             logger.info(f"Input: {input_path}")
             logger.info(f"Output: {output_path}")
+            
+            # --- CROP PREPROCESSING STEP ---
+            if apply_crop_var and current_crop_params and current_crop_params.get("type") not in ("none", "fullframe"):
+                logger.info("Executing pre-process cropping...")
+                from core.common.video_io import VideoIO
+                import glob
+                files_to_crop = []
+                if os.path.isdir(input_path):
+                    video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.webm', '*.flv', '*.gif']
+                    for ext in video_extensions:
+                        for vp in glob.glob(os.path.join(input_path, ext)):
+                            basename = os.path.basename(vp)
+                            if not vp.endswith("_cropped.mp4") and not basename.startswith("crop_preview_"):
+                                files_to_crop.append(vp)
+                else:
+                    if not input_path.endswith("_cropped.mp4"):
+                        files_to_crop.append(input_path)
+                        
+                for vp in files_to_crop:
+                    base_dir = os.path.dirname(vp)
+                    stem = os.path.splitext(os.path.basename(vp))[0]
+                    out_path = os.path.join(base_dir, f"{stem}_cropped.mp4")
+                    if not os.path.exists(out_path):
+                        logger.info(f"Cropping {vp} to {out_path}")
+                        VideoIO.crop_video_ffmpeg(vp, out_path, current_crop_params)
+                
+                logger.info("Cropping complete.")
+            # -------------------------------
             
             # Convert and validate boolean parameters
             use_cudnn_benchmark = bool(use_cudnn_benchmark) if use_cudnn_benchmark is not None else False
@@ -693,6 +775,8 @@ class DepthCrafterWebUI(BaseWebUI):
                 for ext in video_extensions:
                     video_files_to_process.extend(glob.glob(os.path.join(input_path, ext)))
                 
+                from core.common.video_io import VideoIO
+                video_files_to_process = VideoIO.filter_cropped_videos(video_files_to_process)
                 video_files_to_process = sorted(video_files_to_process)
                 
                 if not video_files_to_process:

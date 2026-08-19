@@ -646,7 +646,8 @@ class InpaintingWebUI:
                 'mask_blur_kernel_size': 10,
                 'enable_post_inpainting_blend': False,  # Disabled by default, Merging handles this better
                 'enable_color_transfer': True,  # Enabled for quality
-                'decode_chunk_size': vram_config['decode_chunk_size']
+                'decode_chunk_size': vram_config['decode_chunk_size'],
+                'pad_to_16_9': True
             }
     
     def save_config(self, config_dict):
@@ -684,12 +685,13 @@ class InpaintingWebUI:
                 config.get('mask_blur_kernel_size', 10),
                 config.get('enable_post_inpainting_blend', False),
                 config.get('enable_color_transfer', True),
+                config.get('pad_to_16_9', True),
                 config.get('hf_token', ''),
                 "✓ Configuration loaded successfully"
             )
         except Exception as e:
             # Return current values on error
-            return tuple([None] * 19 + [f"✗ Failed to load config: {e}"])
+            return tuple([None] * 20 + [f"✗ Failed to load config: {e}"])
     
     def reset_to_defaults(self):
         """Reset all parameters to default values (VRAM-aware)"""
@@ -712,6 +714,7 @@ class InpaintingWebUI:
             10,  # mask_blur_kernel_size
             False,  # enable_post_inpainting_blend
             True,  # enable_color_transfer
+            True,  # pad_to_16_9
             '',  # hf_token
             "✓ Reset to default values"
         )
@@ -864,6 +867,11 @@ class InpaintingWebUI:
                         value=self.app_config.get("enable_color_transfer", True),
                         info="Adjusts inpainted colors to match original footage. Adds ~15-20 seconds per 127 frames (optimized). Recommended for final renders."
                     )
+                    pad_to_16_9 = gr.Checkbox(
+                        label="Pad Output to 16:9 (SBS)",
+                        value=self.app_config.get("pad_to_16_9", True),
+                        info="Automatically adds black bars to the left and right of the output to ensure the final SBS video has a perfect 16:9 aspect ratio per eye (32:9 total), compatible with VR headsets."
+                    )
 
             # Progress Section
             with gr.Group():
@@ -925,7 +933,7 @@ class InpaintingWebUI:
                 original_input_blend_strength, output_crf, process_length, offload_type,
                 mask_initial_threshold, mask_morph_kernel_size,
                 mask_dilate_kernel_size, mask_blur_kernel_size,
-                blend_mode, enable_color_transfer, hf_token
+                blend_mode, enable_color_transfer, pad_to_16_9, hf_token
             ]
             
             # All output components
@@ -958,7 +966,7 @@ class InpaintingWebUI:
                     "mask_initial_threshold": float(args[12]), "mask_morph_kernel_size": float(args[13]),
                     "mask_dilate_kernel_size": float(args[14]), "mask_blur_kernel_size": float(args[15]),
                     "blend_mode": args[16], "enable_color_transfer": args[17],
-                    "hf_token": args[18]
+                    "pad_to_16_9": args[18], "hf_token": args[19]
                 }),
                 inputs=all_params,
                 outputs=[status_label]
@@ -1016,7 +1024,7 @@ class InpaintingWebUI:
          original_input_blend_strength, output_crf, process_length, offload_type,
          mask_initial_threshold, mask_morph_kernel_size,
          mask_dilate_kernel_size, mask_blur_kernel_size,
-         blend_mode, enable_color_transfer, hf_token) = args
+         blend_mode, enable_color_transfer, pad_to_16_9, hf_token) = args
 
         # Validate
         try:
@@ -1065,6 +1073,7 @@ class InpaintingWebUI:
             'mask_blur_kernel_size': mask_blur_kernel_size,
             'blend_mode': blend_mode,
             'enable_color_transfer': enable_color_transfer,
+            'pad_to_16_9': pad_to_16_9,
             'hf_token': hf_token
         }
 
@@ -1467,12 +1476,26 @@ class InpaintingWebUI:
                             adaptive_decode_chunk = min(8, user_decode_chunk)
                     else:
                         # 24GB or smaller cards (Strict safety limits)
-                        if frame_h >= 2000:  # 4K or higher
-                            adaptive_decode_chunk = 1
-                        elif frame_h >= 1000:  # 1080p range
-                            adaptive_decode_chunk = min(2, user_decode_chunk)
-                        else:  # 720p or lower
-                            adaptive_decode_chunk = min(4, user_decode_chunk)
+                        if vram_total_gb <= 12:
+                            # 8GB - 12GB cards (e.g. RTX 3060)
+                            if frame_h >= 1000:
+                                adaptive_decode_chunk = 1
+                            elif frame_h >= 700:
+                                adaptive_decode_chunk = min(2, user_decode_chunk)
+                            elif frame_h >= 400:
+                                adaptive_decode_chunk = min(4, user_decode_chunk)
+                            else: # SD / 360p / tiny resolutions
+                                adaptive_decode_chunk = user_decode_chunk
+                        else:
+                            # 16GB - 24GB cards (e.g. RTX 3090/4090, 4080)
+                            if frame_h >= 2000:  # 4K or higher
+                                adaptive_decode_chunk = 1
+                            elif frame_h >= 1000:  # 1080p range
+                                adaptive_decode_chunk = min(2, user_decode_chunk)
+                            elif frame_h >= 700:  # 720p range
+                                adaptive_decode_chunk = min(4, user_decode_chunk)
+                            else:  # SD or lower (480p, 360p)
+                                adaptive_decode_chunk = user_decode_chunk
 
                     if adaptive_decode_chunk < user_decode_chunk:
                         logger.info(
@@ -1555,6 +1578,34 @@ class InpaintingWebUI:
 
             if final_output is None:
                 return False, None
+
+            # --- NEW: 16:9 PyTorch Tensor Padding for SBS Video ---
+            if params.get('pad_to_16_9', True):
+                N, C, H, W = final_output.shape
+                current_single_eye_w = W // 2
+                
+                target_single_eye_w = int(round((H * 16.0) / 9.0))
+                if target_single_eye_w % 2 != 0:
+                    target_single_eye_w += 1
+                    
+                if target_single_eye_w > current_single_eye_w:
+                    total_pad_per_eye = target_single_eye_w - current_single_eye_w
+                    pad_left = total_pad_per_eye // 2
+                    pad_right = total_pad_per_eye - pad_left
+                    
+                    logger.info(f"Padding output from {W}x{H} (Single Eye: {current_single_eye_w}x{H}) to {target_single_eye_w * 2}x{H} (Single Eye: {target_single_eye_w}x{H}) to achieve 16:9 per eye.")
+                    
+                    left_eye_frames = final_output[:, :, :, :current_single_eye_w]
+                    right_eye_frames = final_output[:, :, :, current_single_eye_w:]
+                    
+                    import torch.nn.functional as F
+                    padded_left_eye = F.pad(left_eye_frames, (pad_left, pad_right, 0, 0), mode='constant', value=0.0)
+                    padded_right_eye = F.pad(right_eye_frames, (pad_left, pad_right, 0, 0), mode='constant', value=0.0)
+                    
+                    final_output = torch.cat([padded_left_eye, padded_right_eye], dim=3)
+                else:
+                    logger.debug(f"Padding requested but current single-eye width ({current_single_eye_w}) is >= target 16:9 width ({target_single_eye_w}). Skipping padding.")
+            # ----------------------------------------------------
 
             # 6. Encoding - OPTIMIZED: Use NVENC GPU encoding
             self.progress_queue.put(("status", f"Encoding {base_video_name}..."))
