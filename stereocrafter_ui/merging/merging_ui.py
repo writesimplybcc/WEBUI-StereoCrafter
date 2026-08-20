@@ -732,13 +732,21 @@ class MergingWebUI:
                                 label="Pad 16:9",
                                 value=self.pad_to_16_9
                             )
-                        output_format_input = gr.Dropdown(
-                            choices=["Full SBS (Left-Right)", "Double SBS", "Half SBS (Left-Right)", 
-                                    "Full SBS Cross-eye (Right-Left)", "Anaglyph (Red/Cyan)", 
-                                    "Anaglyph Half-Color", "Anaglyph (Dubois)", "Right-Eye Only"],
-                            value=self.output_format,
-                            label="Output Format"
-                        )
+                        with gr.Row():
+                            output_format_input = gr.Dropdown(
+                                choices=["Full SBS (Left-Right)", "Double SBS", "Half SBS (Left-Right)", 
+                                        "Full SBS Cross-eye (Right-Left)", "Anaglyph (Red/Cyan)", 
+                                        "Anaglyph Half-Color", "Anaglyph (Dubois)", "Right-Eye Only"],
+                                value=self.output_format,
+                                label="Output Format",
+                                scale=2
+                            )
+                            output_crf_input = gr.Slider(
+                                minimum=0, maximum=51, value=17,
+                                step=1, label="Output CRF",
+                                info="Constant Rate Factor (lower = better quality). Default: 17",
+                                scale=1
+                            )
                         batch_chunk_size_input = gr.Number(
                             label="Batch Chunk Size",
                             value=self.batch_chunk_size,
@@ -774,7 +782,7 @@ class MergingWebUI:
                     inpainted_folder_input, original_folder_input,
                     mask_folder_input, output_folder_input,
                     use_gpu_input, pad_to_16_9_input,
-                    output_format_input, batch_chunk_size_input,
+                    output_format_input, output_crf_input, batch_chunk_size_input,
                     enable_color_transfer_input,
                     mask_binarize_threshold_input, mask_dilate_kernel_input,
                     mask_blur_kernel_input, shadow_shift_input,
@@ -1009,7 +1017,7 @@ class MergingWebUI:
         global CUDA_AVAILABLE
         # Extract parameters from args
         (inpainted_folder, original_folder, mask_folder, output_folder,
-         use_gpu, pad_to_16_9, output_format, batch_chunk_size,
+         use_gpu, pad_to_16_9, output_format, output_crf, batch_chunk_size,
          enable_color_transfer, mask_binarize_threshold, mask_dilate_kernel_size,
          mask_blur_kernel_size, shadow_shift, shadow_decay_gamma,
          shadow_start_opacity, shadow_opacity_decay, shadow_min_opacity) = args
@@ -1018,6 +1026,7 @@ class MergingWebUI:
 
         # Validate parameters
         try:
+            output_crf = int(output_crf)
             batch_chunk_size = int(batch_chunk_size)
             mask_binarize_threshold = float(mask_binarize_threshold)
             mask_dilate_kernel_size = int(float(mask_dilate_kernel_size))  # Convert to int for kernel size
@@ -1259,6 +1268,7 @@ class MergingWebUI:
                     video_stream_info=video_stream_info,
                     pad_to_16_9=pad_to_16_9,
                     output_format_str=output_format_current,
+                    user_output_crf=output_crf,
                 )
 
                 if not ffmpeg_process:
