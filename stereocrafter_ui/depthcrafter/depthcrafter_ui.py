@@ -339,7 +339,13 @@ class DepthCrafterWebUI(BaseWebUI):
             gr.Markdown("### Source Prep & Cropping (Auto-Crop Black Bars)")
             with gr.Row():
                 with gr.Column(scale=1):
-                    self.btn_detect_crop = gr.Button("Detect Aspect Ratio & Crop", variant="secondary")
+                    self.btn_detect_crop = gr.Button("⚠️ Detect Aspect Ratio & Crop (Required for non-16:9)", variant="primary")
+                    gr.HTML(
+                        "<div style='font-size: 0.9em; padding: 8px; margin-bottom: 10px; background-color: rgba(255, 193, 7, 0.15); border-left: 4px solid #ffc107; border-radius: 4px;'>"
+                        "<b>Why use this?</b> If your video has black bars (letterbox/pillarbox) or is not 16:9, DepthCrafter will stretch and distort it by default. "
+                        "Clicking this button detects the bars, crops them out, and <b>automatically updates the Target Width and Height</b> sliders to match the true aspect ratio."
+                        "</div>"
+                    )
                     self.crop_status_var = gr.Textbox(label="Status", value="Ready to detect", interactive=False)
                     self.apply_crop_var = gr.Checkbox(label="Apply crop before processing", value=True)
                 with gr.Column(scale=1):
