@@ -1452,12 +1452,8 @@ class InpaintingWebUI:
                         
                     if vram_total_gb >= 90:
                         # 96GB+ RTX Pro 6000 / H100
-                        if frame_h >= 2000:
-                            adaptive_decode_chunk = min(8, user_decode_chunk)
-                        elif frame_h >= 1000:
-                            adaptive_decode_chunk = min(16, user_decode_chunk)
-                        else:
-                            adaptive_decode_chunk = user_decode_chunk
+                        # 96GB is massive. Even 25 frames at 4K only uses ~50GB of VRAM during decode.
+                        adaptive_decode_chunk = user_decode_chunk
                     elif vram_total_gb >= 40:
                         # 48GB RTX 6000 Ada / A6000
                         if frame_h >= 2000:
