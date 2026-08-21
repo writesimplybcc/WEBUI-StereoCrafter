@@ -781,7 +781,7 @@ class InpaintingWebUI:
                             ⚠️ **Warning**: Values above 12 may cause OOM on GPUs with less than 24GB VRAM!
                             """)
                             decode_chunk_size = gr.Slider(
-                                minimum=1, maximum=25, value=int(self.app_config.get("decode_chunk_size", self.vram_defaults['decode_chunk_size'])),
+                                minimum=1, maximum=50, value=int(self.app_config.get("decode_chunk_size", self.vram_defaults['decode_chunk_size'])),
                                 step=1, label="Decode Chunk Size",
                                 info=f"Frames decoded at once. Higher = faster + more VRAM. Default: {self.vram_defaults['decode_chunk_size']} (auto-detected based on GPU VRAM)"
                             )
