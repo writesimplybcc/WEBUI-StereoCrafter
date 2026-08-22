@@ -16,6 +16,7 @@ import queue
 import subprocess
 import time
 import logging
+logger = logging.getLogger(__name__)
 from typing import Optional, Tuple, Optional, Dict, Any, List
 from PIL import Image
 import math
@@ -822,7 +823,8 @@ class SplatterWebUI:
         """Sets the logging level for the stereocrafter_util logger based on debug_mode_var."""
         # Make sure 'set_util_logger_level' is imported and available.
         # It's already in dependency/stereocrafter_util, ensure it's imported at the top.
-        # Add 'import logging' at the top of splatting_gui.py if not already present.
+        # Add 'import logging
+logger = logging.getLogger(__name__)' at the top of splatting_gui.py if not already present.
         set_util_logger_level(logging.INFO) # Default to INFO
         logger.info(f"Logging level set.")
 
@@ -1021,7 +1023,7 @@ class SplatterWebUI:
         num_frames = total_frames_to_process
         height, width = target_output_height, target_output_width
         os.makedirs(os.path.dirname(output_video_path_base), exist_ok=True)
-        print(f"Starting depthSplatting for {os.path.basename(output_video_path_base)}, {num_frames} frames, {height}x{width}")
+        logger.info(f"Starting depthSplatting for {os.path.basename(output_video_path_base)}, {num_frames} frames, {height}x{width}")
         
         # --- Determine output grid dimensions and final path ---
         grid_height, grid_width = (height, width * 2) if dual_output else (height * 2, width * 2)
@@ -1774,7 +1776,7 @@ class SplatterWebUI:
             "skip_lowres_preproc": self.skip_lowres_preproc,
             "track_dp_total_true_on_render": self.track_dp_total_true_on_render,
         }
-        print("Settings defined")
+        logger.info("Settings defined")
         return config
 
     def _get_current_sidecar_paths_and_data(self):
@@ -2881,7 +2883,7 @@ class SplatterWebUI:
         }
 
     def _run_batch_process(self, settings, ):
-        print("Starting batch process")
+        logger.info("Starting batch process")
         """
         Batch processing entry point.
 
@@ -2892,7 +2894,7 @@ class SplatterWebUI:
         In single-file mode:
           - The From/To fields are ignored and the single video is processed.
         """
-        print("Batch process completed")
+        logger.info("Batch process completed")
         import sys
         print("_run_batch_process called", file=sys.stderr)
         try:
@@ -4046,11 +4048,11 @@ class SplatterWebUI:
             json.dump(config, f, indent=4)
 
     def _run_batch_process_wrapper(self, settings):
-        print("Wrapper called")
+        logger.info("Wrapper called")
         try:
-            print("About to call _run_batch_process")
+            logger.info("About to call _run_batch_process")
             self._run_batch_process(settings)
-            print("Returned from _run_batch_process") 
+            logger.info("Returned from _run_batch_process") 
         except Exception as e:
             import sys
             print(f"Exception in _run_batch_process: {e}", file=sys.stderr)
@@ -4224,13 +4226,13 @@ class SplatterWebUI:
                raise ValueError("Process length must be -1 (all frames) or a positive integer.")
 
         except ValueError as e:
-            print(f"Validation error: {e}")
+            logger.info(f"Validation error: {e}")
             yield f"Error: {e}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
             return
 
         # Check inputs
         if not input_source_clips or not input_depth_maps:
-            print("No input source clips or depth maps selected")
+            logger.info("No input source clips or depth maps selected")
             yield "Error: No input source clips or depth maps selected", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)
             return
 
@@ -4288,7 +4290,7 @@ class SplatterWebUI:
             self.processing = False
         except Exception as e:
             self.processing = False
-            print(f"Processing error: {e}")
+            logger.info(f"Processing error: {e}")
             import traceback
             traceback.print_exc()
             yield f"Error during processing: {str(e)}", 0, gr.Button(interactive=True), gr.Button(interactive=True), gr.Button(interactive=True)

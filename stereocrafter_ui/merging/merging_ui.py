@@ -457,9 +457,9 @@ class MergingWebUI:
                 else:
                     preview_np = source_frame
             elif preview_mode == 'Depth Map':
-                print(f"[DEBUG] Depth Map mode - basename: {basename}, is_dual: {is_dual}")
-                print(f"[DEBUG] Frame shape: {frame.shape}, depth_frame shape: {depth_frame.shape}")
-                print(f"[DEBUG] Depth frame min: {depth_frame.min()}, max: {depth_frame.max()}, mean: {depth_frame.mean()}")
+                logger.info(f" Depth Map mode - basename: {basename}, is_dual: {is_dual}")
+                logger.info(f" Frame shape: {frame.shape}, depth_frame shape: {depth_frame.shape}")
+                logger.info(f" Depth frame min: {depth_frame.min()}, max: {depth_frame.max()}, mean: {depth_frame.mean()}")
                 preview_np = depth_frame
             elif preview_mode == 'Anaglyph 3D':
                 # Standard Red-Cyan Anaglyph
@@ -489,8 +489,8 @@ class MergingWebUI:
                 return temp_gif_path, basename, str(frame_index)
             elif preview_mode == 'Processed Mask':
                 # Process mask with all parameters - FIXED VERSION
-                print(f"[DEBUG] Processed Mask mode - occlu_frame shape: {occlu_frame.shape}")
-                print(f"[DEBUG] Occlu frame min: {occlu_frame.min()}, max: {occlu_frame.max()}, mean: {occlu_frame.mean()}")
+                logger.info(f" Processed Mask mode - occlu_frame shape: {occlu_frame.shape}")
+                logger.info(f" Occlu frame min: {occlu_frame.min()}, max: {occlu_frame.max()}, mean: {occlu_frame.mean()}")
                 
                 occlu_tensor = torch.from_numpy(occlu_frame).permute(2, 0, 1).float() / 255.0
                 
@@ -500,8 +500,8 @@ class MergingWebUI:
                 else:
                     mask_tensor = occlu_tensor[0:1]  # Take first channel
 
-                print(f"[DEBUG] Mask tensor shape after grayscale: {mask_tensor.shape}")
-                print(f"[DEBUG] Mask tensor min: {mask_tensor.min()}, max: {mask_tensor.max()}, mean: {mask_tensor.mean()}")
+                logger.info(f" Mask tensor shape after grayscale: {mask_tensor.shape}")
+                logger.info(f" Mask tensor min: {mask_tensor.min()}, max: {mask_tensor.max()}, mean: {mask_tensor.mean()}")
 
                 mask_tensor = mask_tensor.unsqueeze(0)  # [1, 1, H, W]
                 dev = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
@@ -510,17 +510,17 @@ class MergingWebUI:
                 # Apply threshold
                 if mask_threshold >= 0:
                     mask_tensor = (mask_tensor > mask_threshold).float()
-                    print(f"[DEBUG] After threshold {mask_threshold}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
+                    logger.info(f" After threshold {mask_threshold}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
 
                 # Apply dilation
                 if mask_dilate_kernel > 0:
                     mask_tensor = apply_mask_dilation(mask_tensor, int(mask_dilate_kernel), use_gpu=(dev=="cuda"))
-                    print(f"[DEBUG] After dilation {mask_dilate_kernel}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
+                    logger.info(f" After dilation {mask_dilate_kernel}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
 
                 # Apply blur
                 if mask_blur_kernel > 0:
                     mask_tensor = apply_gaussian_blur(mask_tensor, int(mask_blur_kernel), use_gpu=(dev=="cuda"))
-                    print(f"[DEBUG] After blur {mask_blur_kernel}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
+                    logger.info(f" After blur {mask_blur_kernel}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
                 
                 # Apply shadows
                 if shadow_shift > 0:
@@ -529,15 +529,15 @@ class MergingWebUI:
                         shadow_opacity_decay, shadow_min_opacity, shadow_decay_gamma, 
                         use_gpu=(dev=="cuda")
                     )
-                    print(f"[DEBUG] After shadow {shadow_shift}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
+                    logger.info(f" After shadow {shadow_shift}: min={mask_tensor.min()}, max={mask_tensor.max()}, mean={mask_tensor.mean()}")
 
                 # Convert to displayable image - FIXED
                 mask_processed = mask_tensor.squeeze(0).squeeze(0).cpu().numpy()  # Remove batch and channel dims
-                print(f"[DEBUG] Mask processed shape: {mask_processed.shape}, min: {mask_processed.min()}, max: {mask_processed.max()}")
+                logger.info(f" Mask processed shape: {mask_processed.shape}, min: {mask_processed.min()}, max: {mask_processed.max()}")
                 mask_uint8 = (np.clip(mask_processed, 0, 1) * 255).astype(np.uint8)
-                print(f"[DEBUG] Mask uint8 min: {mask_uint8.min()}, max: {mask_uint8.max()}")
+                logger.info(f" Mask uint8 min: {mask_uint8.min()}, max: {mask_uint8.max()}")
                 preview_np = np.stack([mask_uint8]*3, axis=2)  # Convert to RGB
-                print(f"[DEBUG] Final preview_np shape: {preview_np.shape}, min: {preview_np.min()}, max: {preview_np.max()}")
+                logger.info(f" Final preview_np shape: {preview_np.shape}, min: {preview_np.min()}, max: {preview_np.max()}")
             else:
                 # Fallback to source frame
                 preview_np = source_frame
@@ -1053,9 +1053,9 @@ class MergingWebUI:
             yield "Starting Batch Process...", 0
             
             inpainted_videos = sorted(glob.glob(os.path.join(inpainted_folder, "*.mp4")))
-            print(f"[DEBUG] Found {len(inpainted_videos)} videos in {inpainted_folder}")
+            logger.info(f" Found {len(inpainted_videos)} videos in {inpainted_folder}")
             if not inpainted_videos:
-                print(f"[DEBUG] No videos found.")
+                logger.info(f" No videos found.")
                 yield "No .mp4 files found in inpainted video folder", 0
                 return
 
@@ -1063,12 +1063,12 @@ class MergingWebUI:
             
             for i, inpainted_video_path in enumerate(inpainted_videos):
                 if self.stop_event.is_set():
-                    print(f"[DEBUG] Stop event set.")
+                    logger.info(f" Stop event set.")
                     yield "Processing stopped by user", (i / total_videos * 100)
                     break
                     
                 base_name = os.path.basename(inpainted_video_path)
-                print(f"[DEBUG] Processing video: {base_name}")
+                logger.info(f" Processing video: {base_name}")
                 current_percent = (i / total_videos * 100)
                 yield f"Processing {i+1}/{total_videos}: {base_name}", current_percent
                 
@@ -1087,17 +1087,17 @@ class MergingWebUI:
                         core_name_with_width = base_name[:-len(webui_suffix)]
                         is_sbs_input = True
                 else:
-                    print(f"[DEBUG] Skipping {base_name} - Unknown suffix")
+                    logger.info(f" Skipping {base_name} - Unknown suffix")
                     continue # Skip invalid files
                     
                 last_underscore_idx = core_name_with_width.rfind('_')
                 if last_underscore_idx == -1: 
-                    print(f"[DEBUG] Skipping {base_name} - Could not parse width")
+                    logger.info(f" Skipping {base_name} - Could not parse width")
                     continue
                 
                 # Original core extraction
                 core_name = core_name_with_width[:last_underscore_idx]
-                print(f"[DEBUG] Core name identified: {core_name}")
+                logger.info(f" Core name identified: {core_name}")
 
                 # Helper to find matches
                 def find_matches(c_name):
@@ -1116,7 +1116,7 @@ class MergingWebUI:
                 # Fallback: exact name failed, try swapping low -> high?
                 if not splatted4_matches and not splatted2_matches and "_low" in core_name:
                     core_high = core_name.replace("_low", "_high")
-                    print(f"[DEBUG] match failed, trying core_high: {core_high}")
+                    logger.info(f" match failed, trying core_high: {core_high}")
                     splatted4_matches, splatted2_matches = find_matches(core_high)
                     # Identify it as finding original from correct place
                     if splatted4_matches or splatted2_matches:
@@ -1132,12 +1132,12 @@ class MergingWebUI:
                     is_dual_input = True
                 
                 if not splatted_file_path:
-                    print(f"[DEBUG] Skipping {base_name} - No splatted file found in {mask_folder}")
+                    logger.info(f" Skipping {base_name} - No splatted file found in {mask_folder}")
                     yield f"Skipping {base_name} - No splatted file found", current_percent
                     continue
 
                 # --- 2. Setup Readers and Encoder ---
-                print(f"[DEBUG] Using splatted file: {os.path.basename(splatted_file_path)}")
+                logger.info(f" Using splatted file: {os.path.basename(splatted_file_path)}")
                 inpainted_reader = VideoReader(inpainted_video_path, ctx=cpu(0))
                 splatted_reader = VideoReader(splatted_file_path, ctx=cpu(0))
                 
@@ -1198,7 +1198,7 @@ class MergingWebUI:
                     total_pad = target_single_eye_w - hires_W
                     pad_left_val = total_pad // 2
                     pad_right_val = total_pad - pad_left_val
-                    print(f"[DEBUG] Auto-detected padded input! Padding splatted video from {hires_W}x{hires_H} to {target_single_eye_w}x{hires_H} to perfectly match inpainted aspect ratio.")
+                    logger.info(f" Auto-detected padded input! Padding splatted video from {hires_W}x{hires_H} to {target_single_eye_w}x{hires_H} to perfectly match inpainted aspect ratio.")
                     hires_W = target_single_eye_w
 
                 if pad_to_16_9:
@@ -1210,7 +1210,7 @@ class MergingWebUI:
                         total_pad = target_16_9_w - hires_W
                         pad_left_val += total_pad // 2
                         pad_right_val += total_pad - (total_pad // 2)
-                        print(f"[DEBUG] Force padding output to {target_16_9_w}x{hires_H} to achieve 16:9 per eye.")
+                        logger.info(f" Force padding output to {target_16_9_w}x{hires_H} to achieve 16:9 per eye.")
                         hires_W = target_16_9_w
 
                 if original_reader is None and output_format != "Right-Eye Only":
@@ -1249,16 +1249,16 @@ class MergingWebUI:
                 output_filename = f"{core_name}_{perceived_width}{suffix}"
                 output_path = os.path.join(output_folder, output_filename)
 
-                print(f"[DEBUG] Starting FFmpeg process for: {output_path}")
-                print(f"[DEBUG] Params: {output_width}x{output_height}, fps={fps}")
-                print(f"[DEBUG] CUDA_AVAILABLE in merging_ui BEFORE: {CUDA_AVAILABLE}")
+                logger.info(f" Starting FFmpeg process for: {output_path}")
+                logger.info(f" Params: {output_width}x{output_height}, fps={fps}")
+                logger.info(f" CUDA_AVAILABLE in merging_ui BEFORE: {CUDA_AVAILABLE}")
 
                 # Temporarily disable CUDA to force CPU encoding (libx264 CRF=18) to match GUI
                 original_cuda = CUDA_AVAILABLE
                 CUDA_AVAILABLE = False
                 
-                print(f"[DEBUG] CUDA_AVAILABLE in merging_ui AFTER: {CUDA_AVAILABLE}")
-                print(f"[DEBUG] video_stream_info: {video_stream_info}")
+                logger.info(f" CUDA_AVAILABLE in merging_ui AFTER: {CUDA_AVAILABLE}")
+                logger.info(f" video_stream_info: {video_stream_info}")
                 
                 ffmpeg_process = start_ffmpeg_pipe_process(
                     content_width=output_width,
@@ -1290,7 +1290,7 @@ class MergingWebUI:
                 stderr_thread.start()
 
                 # --- 3. Process Chunks ---
-                print(f"[DEBUG] Starting processing chunks...")
+                logger.info(f" Starting processing chunks...")
                 chunk_size = batch_chunk_size
                 for frame_start in range(0, num_frames, chunk_size):
                     if self.stop_event.is_set(): break
@@ -1365,20 +1365,20 @@ class MergingWebUI:
 
                     # Mask Processing
                     processed_mask = mask.clone()
-                    print(f"[DEBUG] Mask processing params: threshold={mask_binarize_threshold}, dilate={mask_dilate_kernel_size}, blur={mask_blur_kernel_size}, shadow_shift={shadow_shift}")
-                    print(f"[DEBUG] Mask shape before processing: {processed_mask.shape}, min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
+                    logger.info(f" Mask processing params: threshold={mask_binarize_threshold}, dilate={mask_dilate_kernel_size}, blur={mask_blur_kernel_size}, shadow_shift={shadow_shift}")
+                    logger.info(f" Mask shape before processing: {processed_mask.shape}, min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
                     
                     if mask_binarize_threshold >= 0:
                         processed_mask = (processed_mask > mask_binarize_threshold).float()
-                        print(f"[DEBUG] After binarization: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
+                        logger.info(f" After binarization: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
                     
                     if mask_dilate_kernel_size > 0:
                         processed_mask = apply_mask_dilation(processed_mask, int(mask_dilate_kernel_size), use_gpu=(dev=="cuda"))
-                        print(f"[DEBUG] After dilation: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
+                        logger.info(f" After dilation: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
                     
                     if mask_blur_kernel_size > 0:
                         processed_mask = apply_gaussian_blur(processed_mask, int(mask_blur_kernel_size), use_gpu=(dev=="cuda"))
-                        print(f"[DEBUG] After blur: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
+                        logger.info(f" After blur: min={processed_mask.min():.4f}, max={processed_mask.max():.4f}, mean={processed_mask.mean():.4f}")
                     
                     base_mask = processed_mask
                     if shadow_shift > 0:
@@ -1388,7 +1388,7 @@ class MergingWebUI:
                             use_gpu=(dev=="cuda")
                         )
                         shadow_intensity = torch.clamp(expanded_mask - base_mask, min=0.0, max=1.0)
-                        print(f"[DEBUG] After shadow: max={shadow_intensity.max():.4f}")
+                        logger.info(f" After shadow: max={shadow_intensity.max():.4f}")
                     else:
                         shadow_intensity = 0.0
 
@@ -1442,7 +1442,7 @@ class MergingWebUI:
                     cpu_chunk = final_chunk.cpu()
                     for chunk_idx, frame_tensor in enumerate(cpu_chunk):
                         if ffmpeg_process.poll() is not None:
-                            print(f"[DEBUG] FFmpeg process finish/died unexpectedly with code {ffmpeg_process.returncode}")
+                            logger.info(f" FFmpeg process finish/died unexpectedly with code {ffmpeg_process.returncode}")
                             raise RuntimeError("FFmpeg process finished early")
 
                         frame_np = frame_tensor.permute(1, 2, 0).numpy()
@@ -1451,9 +1451,9 @@ class MergingWebUI:
                             ffmpeg_process.stdin.write(frame_uint16.tobytes())
                             ffmpeg_process.stdin.flush()
                         except BrokenPipeError:
-                            print("[DEBUG] Broken Pipe Error writing to FFmpeg")
+                            logger.info(" Broken Pipe Error writing to FFmpeg")
                             if ffmpeg_process.poll() is not None:
-                                print(f"[DEBUG] FFmpeg exited with code: {ffmpeg_process.returncode}")
+                                logger.info(f" FFmpeg exited with code: {ffmpeg_process.returncode}")
                             
                             import time
                             time.sleep(0.5) # Give the stderr thread a moment to catch the final crash log
@@ -1466,7 +1466,7 @@ class MergingWebUI:
                             print("------------------------\n")
                             raise
                         except Exception as e:
-                            print(f"[DEBUG] Error writing frame {chunk_idx} of chunk {frame_start}: {e}")
+                            logger.info(f" Error writing frame {chunk_idx} of chunk {frame_start}: {e}")
                             raise
 
                     # Free ALL chunk variables to prevent RAM/VRAM overlaps between loop iterations

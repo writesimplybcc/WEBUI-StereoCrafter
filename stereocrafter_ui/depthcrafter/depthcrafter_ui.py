@@ -323,7 +323,7 @@ class DepthCrafterWebUI(BaseWebUI):
     def create_interface(self):
         """Creates the Gradio interface for DepthCrafter"""
         
-        print("[DEBUG] Creating Input Source section...")
+        logger.info(" Creating Input Source section...")
         # Input Source Section
         with gr.Group():
             gr.Markdown("### Input Source")
@@ -334,7 +334,7 @@ class DepthCrafterWebUI(BaseWebUI):
             with gr.Row():
                 self.output_dir.render()
         
-        print("[DEBUG] Creating Auto-Crop section...")
+        logger.info(" Creating Auto-Crop section...")
         with gr.Group():
             gr.Markdown("### Source Prep & Cropping (Auto-Crop Black Bars)")
             with gr.Row():
@@ -353,7 +353,7 @@ class DepthCrafterWebUI(BaseWebUI):
                     
             self.current_crop_params = gr.State(None)
 
-        print("[DEBUG] Creating Main Settings container...")
+        logger.info(" Creating Main Settings container...")
         # Main Settings Container - Use accordions to reduce initial load
         with gr.Row():
             # Left Column

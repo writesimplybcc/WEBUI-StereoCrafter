@@ -537,8 +537,8 @@ The system dynamically checks your GPU's available memory and adjusts settings a
 **RTX 6000 Ada 48GB (Mid VRAM Workstation)**
 *   **DepthCrafter:** CPU Offload: "none", Max Res: 1536x1536-2048x2048.
 *   **Splatting:** 8K hires / 4K lowres.
-*   **Inpainting:** Resolution up to 7680x2160.
-*   **Merging:** Enable percentile normalization.
+*   **Inpainting (4K Source / 1080p Proxy):** Max `Frames Chunk` = 20, `Decode Chunk Size` = 10, `CPU Offload Type` = model.
+*   **Merging (4K Source):** Max `Batch Chunk Size` = 36 (48 will OOM). Requires a high-end CPU (like Threadripper) for optimal encode speed.
 
 **RTX 6000 Pro 96GB (High CUDA High VRAM)**
 *   **DepthCrafter:** CPU Offload: "none", Max Res: 2048x2048-4096x4096.
