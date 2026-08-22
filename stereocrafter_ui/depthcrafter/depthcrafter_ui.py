@@ -479,8 +479,11 @@ class DepthCrafterWebUI(BaseWebUI):
         )
 
         def handle_detect_crop(input_path):
+            def round_to_64(val):
+                return max(64, round(val / 64.0) * 64) if val else gr.update()
+                
             if not input_path or not os.path.exists(input_path):
-                return "Error: Please set a valid input path.", gr.update(), None
+                return "Error: Please set a valid input path.", gr.update(), None, gr.update(), gr.update()
                 
             test_file = input_path
             if os.path.isdir(input_path):
@@ -492,21 +495,21 @@ class DepthCrafterWebUI(BaseWebUI):
                 if video_files:
                     test_file = video_files[0]
                 else:
-                    return "Error: No video found in folder.", gr.update(), None
+                    return "Error: No video found in folder.", gr.update(), None, gr.update(), gr.update()
             
             from core.common.video_io import VideoIO
             try:
                 params = VideoIO.detect_black_bars(test_file)
                 if params["type"] in ("none", "fullframe"):
                     status = "Fullframe (No crop needed)"
-                    return status, gr.update(value=None), params, params.get('crop_w', gr.update()), params.get('crop_h', gr.update())
+                    return status, gr.update(value=None), params, round_to_64(params.get('crop_w')), round_to_64(params.get('crop_h'))
                 else:
-                    status = f"{params['type'].capitalize()} - Cropping to {params['crop_w']}x{params['crop_h']}"
+                    status = f"{params['type'].capitalize()} - Cropping to {params['crop_w']}x{params['crop_h']} (Rounded to {round_to_64(params['crop_w'])}x{round_to_64(params['crop_h'])})"
                     preview_dir = os.path.join(os.path.dirname(test_file), "Preview")
                     os.makedirs(preview_dir, exist_ok=True)
                     preview_path = os.path.join(preview_dir, f"crop_preview_{os.path.splitext(os.path.basename(test_file))[0]}.mp4")
                     VideoIO.generate_crop_preview_video(test_file, preview_path, params)
-                    return status, gr.update(value=preview_path), params, params['crop_w'], params['crop_h']
+                    return status, gr.update(value=preview_path), params, round_to_64(params['crop_w']), round_to_64(params['crop_h'])
             except Exception as e:
                 return f"Error: {str(e)}", gr.update(), None, gr.update(), gr.update()
 
