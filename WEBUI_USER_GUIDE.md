@@ -83,52 +83,35 @@ If you check **Enable Secondary Output**, DepthCrafter will generate a second de
 - **What it does:** It applies a percentile-based normalization to the raw depth data (ignoring extreme outliers), which can lead to a more stable and visually consistent depth map across time. 
 - **How to use it:** Use this feature if your primary depth map has flickering or extreme contrast shifts caused by single-pixel depth anomalies. You can take this `_robust` file into the Splatting step instead of the primary file.
 
----
+### Hardware Performance & Cost Analysis
 
-### Optimized Settings
+The DepthCrafter pipeline dynamically throttles its processing chunk size based on your available VRAM to prevent Out-Of-Memory (OOM) crashes. 
+Because the AI's temporal attention scales quadratically, pushing cinematic ultra-widescreen resolutions (like `1920x832`) requires massive VRAM to process large chunks.
 
-#### 1080p (1920×1080)
+*The following metrics are based on a **120-second (2,880 frames) 1920x804 clip** running through the complete pipeline (Depth -> Splatting -> Inpainting -> Merging).*
 
-| Parameter | Setting | Notes |
-|-----------|---------|-------|
-| **Batch Size** | `10-15` | Default for 24GB+ GPUs |
-| **Window Size** | `80-130` | Temporal context window |
-| **Overlap** | `6` | Frames between batches |
-| **Num Inference Steps** | `5` | Higher = better quality, slower |
-| **Decode Chunk Size** | `14` | Frames decoded at once |
-| **Processing Chunk Size** | `80-130` | Frames processed per batch |
-| **Output Width** | `1920` | Match source |
-| **Output Height** | `1080` | Match source |
+| GPU Tier | VRAM | Dynamic Chunking (DepthCrafter) | Total Pipeline Time | Target Break-Even Price* |
+|----------|------|---------------------------------|---------------------|--------------------------|
+| **RTX 3090 / 4090** | 24 GB | Max Window: `16` (Stride: 12) | ~5.0 Hours | **$0.36 / hour** |
+| **RTX 6000 Ada** | 48 GB | Max Window: `64` (Stride: 49) | ~3.5 Hours | **$0.51 / hour** |
+| **RTX 5090** | 32 GB | Max Window: `48` (Stride: 36) | ~2.5 Hours | **$0.72 / hour** |
+| **RTX Pro 6000** | 96 GB | Max Window: `110` (Stride: 90) | ~1.8 Hours | **$1.00 / hour** |
 
-**Expected:** ~15-30 fps on RTX 4090
+*( * ) The Target Break-Even Price demonstrates how to evaluate hourly cloud renting costs. If an RTX Pro 6000 costs $1.00/hr, it costs $1.80 per video. To match that exact $1.80 cost on a slower 24GB GPU, you should not pay more than $0.36/hr for it.*
 
-#### 4K (3840×2160)
+### Optimized Settings (DepthCrafter)
 
-| Parameter | Setting | Notes |
-|-----------|---------|-------|
-| **Batch Size** | `6-10` | Reduced for VRAM safety |
-| **Window Size** | `70-100` | Reduced temporal context |
-| **Overlap** | `6` | Keep as-is |
-| **Num Inference Steps** | `5` | Keep as-is |
-| **Decode Chunk Size** | `10-14` | Reduce to 10 if OOM |
-| **Processing Chunk Size** | `50-80` | Reduce to 50 if OOM |
-| **Output Width** | `3840` | Match source |
-| **Output Height** | `2160` | Match source |
-
-**Expected:** ~5-10 fps on RTX 6000 Ada
-
-#### 8K (7680×4320) — Experimental
+> [!IMPORTANT]  
+> The old parameters like "Batch Size" and "Processing Chunk Size" have been deprecated. DepthCrafter automatically calculates the maximum safe chunk size based on your VRAM.
 
 | Parameter | Setting | Notes |
 |-----------|---------|-------|
-| **Batch Size** | `3-5` | Very conservative |
-| **Window Size** | `50-70` | Minimal temporal context |
-| **Overlap** | `6` | Keep as-is |
-| **Num Inference Steps** | `5` | Keep as-is |
-| **Decode Chunk Size** | `6-8` | Very conservative |
-| **Processing Chunk Size** | `30-50` | Small batches |
-
-**Expected:** ~1-3 fps on RTX 6000 Ada
+| **Target Width** | `1920` | Always maintain multiples of 64 or 8 (e.g., 1920) |
+| **Target Height** | `832` | **CRITICAL:** Must be divisible by 8 or the AI will crash! (e.g., 804 must be padded/rounded to 832). Use the *Detect Aspect Ratio* button. |
+| **Window Size** | `100` | The script will automatically throttle this down if you don't have enough VRAM. |
+| **Overlap** | `15` | The script will automatically scale this down alongside Window Size. |
+| **Num Inference Steps** | `5 to 7` | 5 is faster; 7 yields slightly more stable depth maps. |
+| **Decode Chunk Size** | `10` | Keep at 10 for 24GB GPUs to prevent decoding OOMs. |
 
 ---
 
