@@ -823,8 +823,7 @@ class SplatterWebUI:
         """Sets the logging level for the stereocrafter_util logger based on debug_mode_var."""
         # Make sure 'set_util_logger_level' is imported and available.
         # It's already in dependency/stereocrafter_util, ensure it's imported at the top.
-        # Add 'import logging
-logger = logging.getLogger(__name__)' at the top of splatting_gui.py if not already present.
+        # Add 'import logging; logger = logging.getLogger(__name__)' at the top of splatting_gui.py if not already present.
         set_util_logger_level(logging.INFO) # Default to INFO
         logger.info(f"Logging level set.")
 
