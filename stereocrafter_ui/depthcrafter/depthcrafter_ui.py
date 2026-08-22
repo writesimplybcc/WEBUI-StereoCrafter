@@ -499,7 +499,7 @@ class DepthCrafterWebUI(BaseWebUI):
                 params = VideoIO.detect_black_bars(test_file)
                 if params["type"] in ("none", "fullframe"):
                     status = "Fullframe (No crop needed)"
-                    return status, gr.update(value=None), params, gr.update(), gr.update()
+                    return status, gr.update(value=None), params, params.get('crop_w', gr.update()), params.get('crop_h', gr.update())
                 else:
                     status = f"{params['type'].capitalize()} - Cropping to {params['crop_w']}x{params['crop_h']}"
                     preview_dir = os.path.join(os.path.dirname(test_file), "Preview")
