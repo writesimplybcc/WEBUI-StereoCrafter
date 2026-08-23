@@ -343,7 +343,8 @@ class DepthCrafterWebUI(BaseWebUI):
                     gr.HTML(
                         "<div style='font-size: 0.9em; padding: 8px; margin-bottom: 10px; background-color: rgba(255, 193, 7, 0.15); border-left: 4px solid #ffc107; border-radius: 4px;'>"
                         "<b>Why use this?</b> If your video has black bars (letterbox/pillarbox) or is not 16:9, DepthCrafter will stretch and distort it by default. "
-                        "Clicking this button detects the bars, crops them out, and <b>automatically updates the Target Width and Height</b> sliders to match the true aspect ratio."
+                        "Clicking this button detects the bars, crops them out, and <b>automatically updates the Target Width and Height</b> sliders to match the true aspect ratio.<br><br>"
+                        "<b><span style='color: #d9534f;'>⚠️ WARNING:</span></b> <b>Do NOT click this button if your videos have already been cropped!</b> If you accidentally click it on already-cropped videos, the script's FFmpeg detector may hang or fail, and you will have to fully restart the WebUI."
                         "</div>"
                     )
                     self.crop_status_var = gr.Textbox(label="Status", value="Ready to detect", interactive=False)
