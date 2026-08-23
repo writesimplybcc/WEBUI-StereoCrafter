@@ -422,17 +422,17 @@ class DepthCrafterDemo:
             current_pipe_overlap_for_call = max(0, current_pipe_window_for_call // 4)  # Small overlap for continuity
         # For high resolution, reduce window size to prevent OOM based on available VRAM
         if actual_processed_height > 1000 or actual_processed_width > 1000:
-            if effective_vram >= 79.5:
+            if effective_vram >= 75.0:
                 max_win, max_ovlp = 110, 20
-            elif effective_vram >= 47.5:
+            elif effective_vram >= 45.0:
                 max_win, max_ovlp = 64, 15
-            elif effective_vram >= 31.5:
+            elif effective_vram >= 30.0:
                 max_win, max_ovlp = 48, 12
-            elif effective_vram >= 23.5:
+            elif effective_vram >= 22.0:
                 max_win, max_ovlp = 16, 4
-            elif effective_vram >= 19.5:
+            elif effective_vram >= 18.0:
                 max_win, max_ovlp = 12, 3
-            elif effective_vram >= 15.5:
+            elif effective_vram >= 14.0:
                 max_win, max_ovlp = 8, 2
             else:
                 max_win, max_ovlp = 4, 1
@@ -477,17 +477,17 @@ class DepthCrafterDemo:
                     else:
                         base_chunk = 30
                 except Exception:
-                    if effective_vram >= 79.5:
+                    if effective_vram >= 75.0:
                         base_chunk = 30
-                    elif effective_vram >= 47.5:
+                    elif effective_vram >= 45.0:
                         base_chunk = 16
-                    elif effective_vram >= 31.5:
+                    elif effective_vram >= 30.0:
                         base_chunk = 10
-                    elif effective_vram >= 23.5:
+                    elif effective_vram >= 22.0:
                         base_chunk = 6
-                    elif effective_vram >= 19.5:
+                    elif effective_vram >= 18.0:
                         base_chunk = 4
-                    elif effective_vram >= 15.5:
+                    elif effective_vram >= 14.0:
                         base_chunk = 3
                     else:
                         base_chunk = 2

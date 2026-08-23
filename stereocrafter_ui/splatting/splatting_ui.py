@@ -5083,19 +5083,19 @@ class SplatterWebUI:
                 gpu_name = "unknown"
 
             # Determine scaling aggressiveness based on VRAM (6 tiers)
-            if total_vram_gb >= 80:
+            if total_vram_gb >= 75.0:
                 scaling_mode = "ultra"
                 logger.info(f"Ultra VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using ultra scaling")
-            elif total_vram_gb >= 48:
+            elif total_vram_gb >= 45.0:
                 scaling_mode = "aggressive_plus"
                 logger.info(f"High+ VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using aggressive_plus scaling")
-            elif total_vram_gb >= 32:
+            elif total_vram_gb >= 30.0:
                 scaling_mode = "aggressive"
                 logger.info(f"High VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using aggressive scaling")
-            elif total_vram_gb >= 24:
+            elif total_vram_gb >= 22.0:
                 scaling_mode = "moderate"
                 logger.info(f"Medium+ VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using moderate scaling")
-            elif total_vram_gb >= 12:
+            elif total_vram_gb >= 11.0:
                 scaling_mode = "mild_conservative"
                 logger.info(f"Medium VRAM GPU detected ({total_vram_gb:.1f}GB {gpu_name}) - using mild_conservative scaling")
             else:
