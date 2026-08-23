@@ -5245,6 +5245,42 @@ def compute_global_depth_stats(
     return float(global_min), float(global_max)
 
 
+class _NumpyBatch:
+    def __init__(self, arr):
+        self._arr = arr
+    def asnumpy(self):
+        return self._arr
+    @property
+    def shape(self):
+        return self._arr.shape
+
+class _ResizingVideoReader:
+    def __init__(self, inner_reader, out_w, out_h):
+        self._inner = inner_reader
+        self._out_w = int(out_w)
+        self._out_h = int(out_h)
+    def __len__(self) -> int:
+        return len(self._inner)
+    def seek(self, *args, **kwargs):
+        return self._inner.seek(*args, **kwargs)
+    def get_avg_fps(self):
+        return self._inner.get_avg_fps()
+    def get_batch(self, indices):
+        import cv2
+        import numpy as np
+        arr = self._inner.get_batch(indices).asnumpy()
+        in_h, in_w = int(arr.shape[1]), int(arr.shape[2])
+        if in_w == self._out_w and in_h == self._out_h:
+            return _NumpyBatch(arr)
+        interp = cv2.INTER_LINEAR if (self._out_w > in_w or self._out_h > in_h) else cv2.INTER_AREA
+        out = np.empty((arr.shape[0], self._out_h, self._out_w, arr.shape[3]), dtype=arr.dtype)
+        for i in range(arr.shape[0]):
+            res = cv2.resize(arr[i], (self._out_w, self._out_h), interpolation=interp)
+            if res.ndim == 2: res = res[..., np.newaxis]
+            out[i] = res
+        return _NumpyBatch(out)
+
+
 def read_video_frames(
         video_path: str,
         process_length: int,
@@ -5295,6 +5331,15 @@ def read_video_frames(
     video_reader = VideoReader(video_path, ctx=cpu(0), width=width_for_reader, height=height_for_reader)
     first_frame_shape = video_reader.get_batch([0]).shape
     actual_processed_height, actual_processed_width = first_frame_shape[1:3]
+
+    # Enforce divisible by 8 for Stable Video Diffusion (SVD) compatibility
+    target_h = round(actual_processed_height / 8) * 8
+    target_w = round(actual_processed_width / 8) * 8
+    
+    if target_h != actual_processed_height or target_w != actual_processed_width:
+        logger.warning(f"Resolution {actual_processed_width}x{actual_processed_height} is not divisible by 8. Forcing {target_w}x{target_h}.")
+        video_reader = _ResizingVideoReader(video_reader, target_w, target_h)
+        actual_processed_height, actual_processed_width = target_h, target_w
 
     fps = video_reader.get_avg_fps()  # Use actual FPS from the reader
 
