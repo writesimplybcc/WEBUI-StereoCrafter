@@ -1068,7 +1068,9 @@ class MergingWebUI:
                     break
                     
                 base_name = os.path.basename(inpainted_video_path)
-                logger.info(f" Processing video: {base_name}")
+                logger.info("=" * 80)
+                logger.info(f"Processing video {i+1}/{total_videos}: {base_name}")
+                logger.info("=" * 80)
                 current_percent = (i / total_videos * 100)
                 yield f"Processing {i+1}/{total_videos}: {base_name}", current_percent
                 

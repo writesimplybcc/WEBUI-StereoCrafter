@@ -1243,6 +1243,10 @@ class InpaintingWebUI:
                     break
 
                 basename = os.path.basename(video_path)
+                logger.info("=" * 80)
+                logger.info(f"Processing video {idx+1}/{total_videos}: {basename}")
+                logger.info("=" * 80)
+                
                 self.progress_queue.put(("status", f"Processing {idx+1}/{total_videos}: {basename}"))
                 self.progress_queue.put(("logs", f"Processing {idx+1}/{total_videos}: {basename}"))
                 self.progress_queue.put(("batch_progress", f"{idx}/{total_videos}"))
