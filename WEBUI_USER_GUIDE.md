@@ -514,8 +514,8 @@ The system dynamically checks your GPU's available memory and adjusts settings a
 **RTX 5090 32GB (High CUDA Mid VRAM)**
 *   **DepthCrafter:** CPU Offload: "none", Max Res: 1024x1024-1536x1536.
 *   **Splatting:** 8K hires / 4K lowres.
-*   **Inpainting:** Resolution up to 7680x2160.
-*   **Merging:** Enable dithering and gamma.
+*   **Inpainting (2.35:1 Cinematic Source / 1920x800 Proxy):** Max `Frames Chunk` = 24, `Decode Chunk Size` = 8 (automatically capped), `Frame Overlap` = 4.
+*   **Merging (Dubois Mode):** Max `Batch Chunk Size` = 32. CPU decoding/encoding benefits heavily from server-grade CPUs (e.g., 32-core AMD Epyc).
 
 **RTX 6000 Ada 48GB (Mid VRAM Workstation)**
 *   **DepthCrafter:** CPU Offload: "none", Max Res: 1536x1536-2048x2048.
