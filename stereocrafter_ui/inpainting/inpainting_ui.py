@@ -637,7 +637,7 @@ class InpaintingWebUI:
                 'frames_chunk': vram_config['frames_chunk'],
                 'frame_overlap': vram_config['overlap'],
                 'original_input_blend_strength': 0.0,
-                'output_crf': 18,
+                'output_crf': 17,
                 'process_length': -1,
                 'offload_type': default_offload,
                 'mask_initial_threshold': 0.3,
@@ -676,7 +676,7 @@ class InpaintingWebUI:
                 config.get('frames_chunk', self.vram_defaults['frames_chunk']),
                 config.get('frame_overlap', self.vram_defaults['frame_overlap']),
                 config.get('original_input_blend_strength', 0.0),
-                config.get('output_crf', 18),
+                config.get('output_crf', 17),
                 config.get('process_length', -1),
                 config.get('offload_type', 'none'),
                 config.get('mask_initial_threshold', 0.3),
@@ -705,7 +705,7 @@ class InpaintingWebUI:
             self.vram_defaults['frames_chunk'],  # frames_chunk (VRAM-aware)
             self.vram_defaults['frame_overlap'],  # frame_overlap (VRAM-aware)
             0.0,  # original_input_blend_strength
-            18,  # output_crf
+            17,  # output_crf
             -1,  # process_length
             'none',  # offload_type (changed for better VRAM utilization)
             0.3,  # mask_initial_threshold
@@ -814,7 +814,7 @@ class InpaintingWebUI:
                             info="The number of frames that temporally overlap between consecutive processing chunks. These overlapping frames from the previous generated output and original input are smoothly blended to condition the start of the current chunk, reducing visual glitches. Default: 6 (balanced for speed and quality, user-optimized)"
                         )
                         output_crf = gr.Slider(
-                            minimum=0, maximum=51, value=float(self.app_config.get("output_crf", 18)),
+                            minimum=0, maximum=51, value=float(self.app_config.get("output_crf", 17)),
                             step=1, label="Output CRF",
                             info="Constant Rate Factor for video encoding (lower is higher quality). Adjust based on codec (H.264/H.265)."
                         )
