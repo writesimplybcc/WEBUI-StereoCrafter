@@ -334,7 +334,7 @@ class SplatterWebUI:
         "PROC_LENGTH": "-1",
         "BATCH_SIZE_FULL": "10",
         "BATCH_SIZE_LOW": "15",
-        "CRF_OUTPUT": "23",
+        "CRF_OUTPUT": "17",
 
         # VRAM-aware batch size defaults (overridden at runtime by get_vram_config)
         "BATCH_FULL_HIGH_VRAM": "14",
