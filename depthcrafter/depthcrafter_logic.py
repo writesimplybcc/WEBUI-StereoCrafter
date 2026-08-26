@@ -506,13 +506,13 @@ class DepthCrafterDemo:
                     decode_chunk_size=safe_chunk_size,
                 )
 
-                if actual_processed_height > 1000 or actual_processed_width > 1000:
+                if actual_processed_height > 2500 or actual_processed_width > 2500:
                     try:
                         if hasattr(self.pipe, 'disable_xformers_memory_efficient_attention'):
                             self.pipe.disable_xformers_memory_efficient_attention()
                         if hasattr(self.pipe.unet, 'set_attention_slice'):
                             self.pipe.unet.set_attention_slice("auto")
-                        _logger.info("Disabled xFormers and enabled UNet attention slicing for 1080p to prevent CUDA grid size overflow.")
+                        _logger.info("Disabled xFormers and enabled UNet attention slicing for extreme resolutions to prevent CUDA grid size overflow.")
                     except Exception as e:
                         _logger.warning(f"Could not apply high-res attention fixes: {e}")
 

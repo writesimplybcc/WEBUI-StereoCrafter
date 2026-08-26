@@ -209,6 +209,11 @@ class VideoIO:
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to crop video: {e}")
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
             return False
 
     @staticmethod
