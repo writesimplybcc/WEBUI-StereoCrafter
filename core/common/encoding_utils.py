@@ -43,12 +43,14 @@ DEFAULT_ENCODING_CONFIG = {
 }
 
 
-def get_encoder_codec(encoder: str, force_10bit: bool = False) -> str:
+def get_encoder_codec(encoder: str, force_10bit: bool = False, width: int = 0, height: int = 0) -> str:
     """Determine the encoder codec based on settings.
 
     Args:
         encoder: "Auto" or "Force CPU"
         force_10bit: Whether to use 10-bit encoding
+        width: Video width
+        height: Video height
 
     Returns:
         Codec string (e.g., "h264_nvenc", "libx264", "hevc_nvenc", "libx265")
@@ -57,6 +59,8 @@ def get_encoder_codec(encoder: str, force_10bit: bool = False) -> str:
         return "libx265" if force_10bit else "libx264"
 
     if CUDA_AVAILABLE:
+        if width > 4096 or height > 4096:
+            return "hevc_nvenc"  # h264_nvenc fails on dimensions > 4096
         return "hevc_nvenc" if force_10bit else "h264_nvenc"
 
     return "libx265" if force_10bit else "libx264"
@@ -113,6 +117,8 @@ def build_encoder_args(
     crf: int = 23,
     force_10bit: bool = False,
     nvenc_options: Optional[Dict[str, Any]] = None,
+    width: int = 0,
+    height: int = 0,
 ) -> Dict[str, Any]:
     """Build encoding arguments for FFmpeg.
 
@@ -122,17 +128,14 @@ def build_encoder_args(
         tune: CPU tune option
         crf: CRF value for quality control
         force_10bit: Whether to force 10-bit output
-        nvenc_options: Optional dict with NVENC-specific options:
-            - lookahead_enabled: bool
-            - lookahead: int (frames)
-            - spatial_aq: bool
-            - temporal_aq: bool
-            - aq_strength: int
+        nvenc_options: Optional dict with NVENC-specific options
+        width: Video width
+        height: Video height
 
     Returns:
         Dict with keys: codec, preset, tune, crf, pix_fmt, extra_args
     """
-    codec = get_encoder_codec(encoder, force_10bit)
+    codec = get_encoder_codec(encoder, force_10bit, width, height)
     is_nvenc = "nvenc" in codec
     preset = quality_to_preset(quality, is_nvenc)
     tune_flag = get_tune_flag(tune, codec)

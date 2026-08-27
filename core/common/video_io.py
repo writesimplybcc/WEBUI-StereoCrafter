@@ -968,6 +968,14 @@ def encode_frames_to_mp4(
 
     force_10bit = is_hdr or output_color_mode in ("bt.2020 pq", "bt.2020 hlg", "bt.2020")
 
+    frame_w, frame_h = 0, 0
+    for f in os.listdir(temp_png_dir):
+        if f.endswith('.png'):
+            img = cv2.imread(os.path.join(temp_png_dir, f))
+            if img is not None:
+                frame_h, frame_w = img.shape[:2]
+                break
+
     enc_args = build_encoder_args(
         encoder=enc_config.get("encoder", "Auto"),
         quality=enc_config.get("quality", "Medium"),
@@ -981,6 +989,8 @@ def encode_frames_to_mp4(
             "temporal_aq": enc_config.get("nvenc_temporal_aq", False),
             "aq_strength": enc_config.get("nvenc_aq_strength", 8),
         },
+        width=frame_w,
+        height=frame_h,
     )
 
     output_codec = enc_args["codec"]
@@ -1100,6 +1110,8 @@ def start_ffmpeg_pipe_process(
             "temporal_aq": enc_config.get("nvenc_temporal_aq", False),
             "aq_strength": enc_config.get("nvenc_aq_strength", 8),
         },
+        width=content_width,
+        height=content_height,
     )
 
     cmd.extend(["-c:v", enc_args["codec"]])

@@ -107,7 +107,7 @@ def load_inpainting_pipeline_hf(
             scheduler=scheduler,
             feature_extractor=feature_extractor,
         )
-        pipeline = pipeline.to(device, dtype=dtype)
+        pipeline = pipeline.to(device, dtype=dtype); logger.info("Compiling UNet using torch.compile..."); pipeline.unet = torch.compile(pipeline.unet, mode="reduce-overhead")
 
         # Configure attention processors
         attention_set = False
@@ -250,7 +250,7 @@ def load_inpainting_pipeline_local(
             scheduler=scheduler,
             feature_extractor=feature_extractor,
         )
-        pipeline = pipeline.to(device, dtype=dtype)
+        pipeline = pipeline.to(device, dtype=dtype); logger.info("Compiling UNet using torch.compile..."); pipeline.unet = torch.compile(pipeline.unet, mode="reduce-overhead")
 
         # Configure attention processors
         attention_set = False
