@@ -197,6 +197,15 @@ class VideoIO:
             return False
             
         w, h, x, y = crop_params["crop_w"], crop_params["crop_h"], crop_params["crop_x"], crop_params["crop_y"]
+        
+        info = get_video_stream_info(input_path)
+        if info:
+            orig_w = int(info.get("width", 0))
+            orig_h = int(info.get("height", 0))
+            if w == orig_w and h == orig_h:
+                logger.info(f"Video is already {w}x{h}, skipping unnecessary crop.")
+                return False
+                
         crop_filter = f"crop={w}:{h}:{x}:{y}"
         
         cmd = [

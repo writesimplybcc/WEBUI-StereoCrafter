@@ -90,5 +90,11 @@ echo ""
 echo "Starting StereoCrafter WEBUI..."
 echo ""
 
+# Set persistent cache directories for PyTorch compilation
+export TORCHINDUCTOR_CACHE_DIR="/workspace/WEBUI-StereoCrafter/weights/.torch_cache"
+export TRITON_CACHE_DIR="/workspace/WEBUI-StereoCrafter/weights/.triton_cache"
+mkdir -p $TORCHINDUCTOR_CACHE_DIR
+mkdir -p $TRITON_CACHE_DIR
+
 # Start the application
 python webui.py --share --server-name 0.0.0.0 --server-port 7860
