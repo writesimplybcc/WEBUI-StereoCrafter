@@ -107,7 +107,7 @@ def load_inpainting_pipeline_hf(
             scheduler=scheduler,
             feature_extractor=feature_extractor,
         )
-        pipeline = pipeline.to(device, dtype=dtype); logger.info("Compiling UNet using torch.compile..."); pipeline.unet = torch.compile(pipeline.unet, mode="reduce-overhead")
+        pipeline = pipeline.to(device, dtype=dtype)
 
         # Configure attention processors
         attention_set = False
@@ -250,7 +250,7 @@ def load_inpainting_pipeline_local(
             scheduler=scheduler,
             feature_extractor=feature_extractor,
         )
-        pipeline = pipeline.to(device, dtype=dtype); logger.info("Compiling UNet using torch.compile..."); pipeline.unet = torch.compile(pipeline.unet, mode="reduce-overhead")
+        pipeline = pipeline.to(device, dtype=dtype)
 
         # Configure attention processors
         attention_set = False
@@ -646,6 +646,7 @@ class InpaintingWebUI:
                 'mask_blur_kernel_size': 10,
                 'enable_post_inpainting_blend': False,  # Disabled by default, Merging handles this better
                 'enable_color_transfer': True,  # Enabled for quality
+                'enable_compile': True,
                 'decode_chunk_size': vram_config['decode_chunk_size'],
                 'pad_to_16_9': True
             }
@@ -685,6 +686,7 @@ class InpaintingWebUI:
                 config.get('mask_blur_kernel_size', 10),
                 config.get('enable_post_inpainting_blend', False),
                 config.get('enable_color_transfer', True),
+                config.get('enable_compile', True),
                 config.get('pad_to_16_9', True),
                 config.get('hf_token', ''),
                 "✓ Configuration loaded successfully"
@@ -714,6 +716,7 @@ class InpaintingWebUI:
             10,  # mask_blur_kernel_size
             False,  # enable_post_inpainting_blend
             True,  # enable_color_transfer
+            True,  # enable_compile
             True,  # pad_to_16_9
             '',  # hf_token
             "✓ Reset to default values"
@@ -862,6 +865,11 @@ class InpaintingWebUI:
                         value=self.app_config.get("blend_mode", "Directional Blend (Recommended)"),
                         info="Select 'None' to use raw AI inpainting, or 'Directional Blend' to seamlessly merge the original high-res foreground without halos."
                     )
+                    enable_compile = gr.Checkbox(
+                        label="Enable PyTorch 2.0 Compilation (Takes 10 mins, runs 20% faster)",
+                        value=self.app_config.get("enable_compile", True),
+                        info="Re-compiles the AI model to machine code for maximum speed. Only takes 10 minutes on the first video. Uncheck to start instantly."
+                    )
                     enable_color_transfer = gr.Checkbox(
                         label="Enable Color Transfer",
                         value=self.app_config.get("enable_color_transfer", True),
@@ -933,7 +941,7 @@ class InpaintingWebUI:
                 original_input_blend_strength, output_crf, process_length, offload_type,
                 mask_initial_threshold, mask_morph_kernel_size,
                 mask_dilate_kernel_size, mask_blur_kernel_size,
-                blend_mode, enable_color_transfer, pad_to_16_9, hf_token
+                blend_mode, enable_color_transfer, enable_compile, pad_to_16_9, hf_token
             ]
             
             # All output components
@@ -965,8 +973,8 @@ class InpaintingWebUI:
                     "output_crf": int(args[9]), "process_length": int(args[10]), "offload_type": args[11],
                     "mask_initial_threshold": float(args[12]), "mask_morph_kernel_size": float(args[13]),
                     "mask_dilate_kernel_size": float(args[14]), "mask_blur_kernel_size": float(args[15]),
-                    "blend_mode": args[16], "enable_color_transfer": args[17],
-                    "pad_to_16_9": args[18], "hf_token": args[19]
+                    "blend_mode": args[16], "enable_color_transfer": args[17], "enable_compile": args[18],
+                    "pad_to_16_9": args[19], "hf_token": args[20]
                 }),
                 inputs=all_params,
                 outputs=[status_label]
@@ -1024,7 +1032,7 @@ class InpaintingWebUI:
          original_input_blend_strength, output_crf, process_length, offload_type,
          mask_initial_threshold, mask_morph_kernel_size,
          mask_dilate_kernel_size, mask_blur_kernel_size,
-         blend_mode, enable_color_transfer, pad_to_16_9, hf_token) = args
+         blend_mode, enable_color_transfer, enable_compile, pad_to_16_9, hf_token) = args
 
         # Validate
         try:
@@ -1073,6 +1081,7 @@ class InpaintingWebUI:
             'mask_blur_kernel_size': mask_blur_kernel_size,
             'blend_mode': blend_mode,
             'enable_color_transfer': enable_color_transfer,
+            'enable_compile': enable_compile,
             'pad_to_16_9': pad_to_16_9,
             'hf_token': hf_token
         }
@@ -1199,6 +1208,10 @@ class InpaintingWebUI:
                 offload_type=params['offload_type'],
                 token=params['hf_token'] if params['hf_token'] else None
             )
+
+            if params.get('enable_compile', True) and hasattr(torch, 'compile'):
+                logger.info('Compiling UNet using torch.compile for maximum speed...')
+                self.pipeline.unet = torch.compile(self.pipeline.unet, mode='reduce-overhead')
 
             # Find videos
             input_videos = self.scan_for_videos(params['input_folder'])
