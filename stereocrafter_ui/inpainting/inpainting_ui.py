@@ -1211,7 +1211,7 @@ class InpaintingWebUI:
 
             if params.get('enable_compile', True) and hasattr(torch, 'compile'):
                 logger.info('Compiling UNet using torch.compile for maximum speed...')
-                self.pipeline.unet = torch.compile(self.pipeline.unet, mode='reduce-overhead')
+                self.pipeline.unet = torch.compile(self.pipeline.unet)
 
             # Find videos
             input_videos = self.scan_for_videos(params['input_folder'])
